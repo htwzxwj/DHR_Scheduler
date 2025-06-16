@@ -1,38 +1,32 @@
 """
-全局攻击模拟 - 攻击会影响所有执行体
+全局攻击模拟 - 攻击会影响所有执行体，基于FusionSystem
 """
 
 import random
 import numpy as np
 import pandas as pd
 from typing import List, Dict, Tuple
-from AttackSimulation import Executor, create_sample_executors
+from collections import defaultdict
 
-# === 全局变量定义 ===
-CORRECT_SIGNAL = "正常"   # 正确信号
-ERROR_SIGNAL = "异常"     # 错误信号
-
-# 为Executor类扩展generate_output方法
-def generate_output(executor):
-    """生成执行体的输出信号
-    
-    Args:
-        executor: 执行体实例
-        
-    Returns:
-        输出信号: CORRECT_SIGNAL或ERROR_SIGNAL
-    """
-    if executor.is_compromised:
-        return ERROR_SIGNAL
-    else:
-        return CORRECT_SIGNAL
-
+# 直接从FusionSystem导入类和常量
+from FusionSystem import FusionSystem, CORRECT_SIGNAL, ERROR_SIGNAL
 
 class GlobalAttackSimulator:
-    """全局攻击模拟器 - 每次攻击会影响所有执行体"""
+    """全局攻击模拟器 - 每次攻击会影响所有执行体，使用FusionSystem实现"""
     
-    def __init__(self, executors: List[Executor]):
-        self.executors = executors
+    def __init__(self, num_units: int = 5, min_active_units: int = 3):
+        # 创建融合系统
+        self.fusion_system = FusionSystem(min_active_units=min_active_units)
+        
+        # 创建执行单元
+        for i in range(num_units):
+            unit_id = f"unit_{i}"
+            defense_threshold = random.uniform(0.3, 0.8)  # 随机防御阈值
+            self.fusion_system.add_unit(unit_id, 
+                                      weight=1.0, 
+                                      error_threshold=3, 
+                                      attack_threshold=defense_threshold)
+        
         self.attack_history = []
         self.simulation_rounds = 0
         
@@ -63,39 +57,52 @@ class GlobalAttackSimulator:
             "compromised_count": 0
         }
         
-        # 对每个未被攻陷的执行体进行攻击
-        for executor in [e for e in self.executors if not e.is_compromised]:
-            # 判断攻击是否成功
-            attack_success = attack_strength > executor.defense_threshold
-            
-            # 应用攻击效果
-            executor.attack_count += 1
-            attack_result["total_attacks"] += 1
-            
-            # 记录攻击前的状态
-            was_compromised = executor.is_compromised
-            
-            # 如果攻击成功，执行体被攻陷
-            if attack_success:
-                executor.successful_attacks += 1
-                attack_result["successful_attacks"] += 1
-                executor.is_compromised = True
-            
-            # 记录攻击后的状态
-            became_compromised = executor.is_compromised and not was_compromised
-            if became_compromised:
-                attack_result["compromised_count"] += 1
-            
-            # 添加本次攻击记录
-            target_result = {
-                "executor_id": executor.id,
-                "defense_threshold": executor.defense_threshold,
-                "attack_success": attack_success,
-                "status": "Compromised" if became_compromised else ("Safe" if not attack_success else "Success"),
-                "became_compromised": became_compromised
-            }
-            
-            attack_result["targets"].append(target_result)
+        # 为每个执行单元生成攻击信号
+        attack_signals = {}
+        for unit_id, unit in self.fusion_system.units.items():
+            if unit.active:  # 只攻击活跃的单元
+                attack_signals[unit_id] = attack_strength
+                attack_result["total_attacks"] += 1
+                
+                # 判断攻击是否成功（比较攻击强度和防御阈值）
+                attack_success = attack_strength > unit.attack_threshold
+                
+                # 记录攻击结果
+                if attack_success:
+                    attack_result["successful_attacks"] += 1
+                    
+                    # 如果单元之前是活跃的，现在被攻破，计数器+1
+                    if unit.active and attack_success:
+                        attack_result["compromised_count"] += 1
+                
+                # 添加本次攻击记录
+                target_result = {
+                    "unit_id": unit_id,
+                    "defense_threshold": unit.attack_threshold,
+                    "attack_success": attack_success,
+                    "status": "Success" if attack_success else "Safe"
+                }
+                
+                attack_result["targets"].append(target_result)
+        
+        # 收集所有执行体的输出信号
+        outputs = self.fusion_system.collect_outputs(attack_signals)
+        
+        # 融合输出信号
+        fused_output = self.fusion_system.fuse_outputs(outputs)
+        
+        # 更新执行体状态
+        self.fusion_system.update_feedback(outputs, fused_output)
+        
+        # 更新权重
+        self.fusion_system.update_weights()
+        
+        # 尝试替换下线的执行体
+        self.fusion_system.try_replace_if_needed()
+        
+        # 将输出信号添加到攻击结果中
+        attack_result["executor_outputs"] = outputs
+        attack_result["fused_output"] = fused_output
         
         self.attack_history.append(attack_result)
         return attack_result
@@ -116,7 +123,7 @@ class GlobalAttackSimulator:
         for round_num in range(num_rounds):
             self.simulation_rounds = round_num + 1
             
-            # ! 生成本轮攻击的强度
+            # 生成本轮攻击的强度
             attack_strength = random.uniform(min_strength, max_strength)
             
             # 执行全局攻击
@@ -132,20 +139,46 @@ class GlobalAttackSimulator:
                 print(f"Newly Compromised Executors: {result['compromised_count']}")
                 
             # 显示当前各执行体状态
-            active_executors = [e for e in self.executors if not e.is_compromised]
-            print(f"Active Executors: {len(active_executors)}/{len(self.executors)}")
+            active_units = [u for u in self.fusion_system.units.values() if u.active]
+            all_units = self.fusion_system.units.values()
+            print(f"Active Units: {len(active_units)}/{len(self.fusion_system.units)}")
             
-            # 检查是否所有执行体都被攻陷
-            if all(e.is_compromised for e in self.executors):
-                print(f"All executors compromised after round {round_num + 1}, simulation ended")
+            # 输出各执行体信号状态
+            print("Unit Signals:")
+            for unit_id, signal in result.get("executor_outputs", {}).items():
+                status = "正常" if signal == CORRECT_SIGNAL else "异常"
+                print(f"  Unit {unit_id}: {signal} ({status})")
+                
+            # 输出融合信号
+            fused = result.get("fused_output")
+            if fused:
+                fused_status = "正常" if fused == CORRECT_SIGNAL else "异常"
+                print(f"Fused Output: {fused} ({fused_status})")
+            
+            # 检查是否所有执行体都被软下线
+            if not any(u.active for u in self.fusion_system.units.values()):
+                print(f"All units are inactive after round {round_num + 1}, simulation ended")
                 break
         
         return results
         
     def reset_simulation(self):
         """重置模拟状态"""
-        for executor in self.executors:
-            executor.reset()
+        # 重新创建一个新的融合系统
+        num_units = len(self.fusion_system.units)
+        min_active_units = self.fusion_system.min_active_units
+        
+        self.fusion_system = FusionSystem(min_active_units=min_active_units)
+        
+        # 重新添加执行单元
+        for i in range(num_units):
+            unit_id = f"unit_{i}"
+            defense_threshold = random.uniform(0.3, 0.8)  # 随机防御阈值
+            self.fusion_system.add_unit(unit_id, 
+                                      weight=1.0, 
+                                      error_threshold=3, 
+                                      attack_threshold=defense_threshold)
+            
         self.attack_history.clear()
         self.simulation_rounds = 0
         
@@ -154,41 +187,61 @@ class GlobalAttackSimulator:
         total_attacks = sum(result["total_attacks"] for result in self.attack_history)
         successful_attacks = sum(result["successful_attacks"] for result in self.attack_history)
         
-        executor_stats = []
-        for executor in self.executors:
+        # 统计输出信号
+        correct_signals = 0
+        error_signals = 0
+        for result in self.attack_history:
+            for _, signal in result.get("executor_outputs", {}).items():
+                if signal == CORRECT_SIGNAL:
+                    correct_signals += 1
+                elif signal == ERROR_SIGNAL:
+                    error_signals += 1
+        
+        # 统计融合结果
+        fused_correct = sum(1 for result in self.attack_history if result.get("fused_output") == CORRECT_SIGNAL)
+        fused_error = sum(1 for result in self.attack_history if result.get("fused_output") == ERROR_SIGNAL)
+        
+        # 获取执行单元状态
+        unit_stats = []
+        for unit_id, unit in self.fusion_system.units.items():
             stats = {
-                "id": executor.id,
-                "defense_threshold": executor.defense_threshold,
-                "attacks_received": executor.attack_count,
-                "successful_attacks_received": executor.successful_attacks,
-                "is_compromised": executor.is_compromised
+                "id": unit_id,
+                "attack_threshold": unit.attack_threshold,
+                "consecutive_errors": unit.consecutive_errors,
+                "active": unit.active,
+                "soft_retired": unit.soft_retired,
+                "weight": unit.weight
             }
-            executor_stats.append(stats)
+            unit_stats.append(stats)
         
         return {
             "total_rounds": self.simulation_rounds,
             "total_attacks": total_attacks,
             "successful_attacks": successful_attacks,
             "success_rate": successful_attacks / max(1, total_attacks),
-            "compromised_executors": sum(1 for e in self.executors if e.is_compromised),
-            "executor_stats": executor_stats
+            "active_units": sum(1 for u in self.fusion_system.units.values() if u.active),
+            "total_units": len(self.fusion_system.units),
+            "unit_stats": unit_stats,
+            "signal_stats": {
+                "correct_signals": correct_signals,
+                "error_signals": error_signals,
+                "fused_correct": fused_correct,
+                "fused_error": fused_error
+            }
         }
         
 
-
 # 示例使用
 if __name__ == "__main__":
-    # 创建样本执行体
-    print("Creating sample executors...")
-    executors = create_sample_executors(5)
+    # 创建全局攻击模拟器（内部会创建融合系统和执行单元）
+    print("Creating global attack simulator with fusion system...")
+    simulator = GlobalAttackSimulator(num_units=5, min_active_units=3)
     
     # 显示初始状态
-    print("Initial executor states:")
-    for executor in executors:
-        print(f"Executor {executor.id}: Defense={executor.defense_threshold:.3f}")
-    
-    # 创建全局攻击模拟器
-    simulator = GlobalAttackSimulator(executors)
+    print("Initial execution unit states:")
+    for unit_id, unit in simulator.fusion_system.units.items():
+        print(f"Unit {unit_id}: Attack Threshold={unit.attack_threshold:.3f}, "
+              f"Active={unit.active}, Weight={unit.weight:.3f}")
     
     # 运行全局攻击模拟
     print("\nStarting global attack simulation...")
@@ -205,11 +258,21 @@ if __name__ == "__main__":
     print(f"Total attacks: {summary['total_attacks']}")
     print(f"Successful attacks: {summary['successful_attacks']}")
     print(f"Attack success rate: {summary['success_rate']:.2%}")
-    print(f"Compromised executors: {summary['compromised_executors']}")
+    print(f"Active units: {summary['active_units']}/{summary['total_units']}")
     
-    print("\nFinal executor states:")
-    for stats in summary['executor_stats']:
-        print(f"Executor {stats['id']}: "
-              f"Defense threshold: {stats['defense_threshold']:.3f}, "
-              f"Attacks received: {stats['attacks_received']}, "
-              f"Compromised: {'Yes' if stats['is_compromised'] else 'No'}")
+    # 显示输出信号统计
+    signal_stats = summary.get("signal_stats", {})
+    print("\nSignal Statistics:")
+    print(f"Correct Signals: {signal_stats.get('correct_signals', 0)}")
+    print(f"Error Signals: {signal_stats.get('error_signals', 0)}")
+    print(f"Fused Correct: {signal_stats.get('fused_correct', 0)}")
+    print(f"Fused Error: {signal_stats.get('fused_error', 0)}")
+    
+    print("\nFinal execution unit states:")
+    for stats in summary['unit_stats']:
+        print(f"Unit {stats['id']}: "
+              f"Attack threshold: {stats['attack_threshold']:.3f}, "
+              f"Weight: {stats['weight']:.3f}, "
+              f"Active: {'Yes' if stats['active'] else 'No'}, "
+              f"Soft retired: {'Yes' if stats['soft_retired'] else 'No'}, "
+              f"Consecutive errors: {stats['consecutive_errors']}")
