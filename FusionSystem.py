@@ -1,28 +1,56 @@
-import time
-from collections import defaultdict
+from collections import defaultdict, deque
 import math
+from scipy.stats import beta
 
 # === 全局变量定义 ===
 CORRECT_SIGNAL = "A"  # 正确信号
 ERROR_SIGNAL = "B"    # 错误信号
 
 class ExecutionUnit:
-    def __init__(self, unit_id, weight=1.0, error_threshold=3, recovery_threshold=1, attack_threshold=0.5):
+    def __init__(self, unit_id, weight=1.0, error_threshold=1, recovery_threshold=1,
+                 attack_threshold=0.5, bayes_window=10):
         self.unit_id = unit_id
         self.weight = weight
         self.error_threshold = error_threshold
         self.recovery_threshold = recovery_threshold
         self.attack_threshold = attack_threshold
-
-        self.consecutive_errors = 0
         self.active = True
         self.soft_retired = False
 
+        self.recent_results = deque(maxlen=bayes_window)  # 窗口缓存正确/错误
+        self.consecutive_corrects = 0
+
+        for i in range(bayes_window):
+            self.recent_results.append((True))
+
+
     def generate_output(self, attack_signal):
-        if attack_signal > self.attack_threshold:
-            return ERROR_SIGNAL
+        return ERROR_SIGNAL if attack_signal > self.attack_threshold else CORRECT_SIGNAL
+
+    def record_result(self, is_correct):
+        self.recent_results.append(is_correct)
+        if self.soft_retired:
+            if is_correct:
+                self.consecutive_corrects += 1
+                if self.consecutive_corrects >= self.recovery_threshold:
+                    self.soft_retired = False
+                    self.active = True
+                    print(f"[恢复] 执行体 {self.unit_id} 连续正确 {self.recovery_threshold} 次，已恢复上线")
+            else:
+                self.consecutive_corrects = 0
         else:
-            return CORRECT_SIGNAL
+            if not is_correct:
+                self.soft_retired = True
+                self.active = False
+                self.consecutive_corrects = 0
+                print(f"[软下线] 执行体 {self.unit_id} 输出与融合结果不一致，疑似被攻击")
+
+    def beta_accuracy(self):
+        correct = sum(self.recent_results)
+        total = len(self.recent_results)
+        a = correct + 1
+        b = total - correct + 1
+        return beta.mean(a, b)
 
 
 class FusionSystem:
@@ -35,138 +63,126 @@ class FusionSystem:
 
     def collect_outputs(self, attack_signals):
         outputs = {}
-        for unit_id, unit in self.units.items():
-            if unit.active:
-                atk_sig = attack_signals.get(unit_id, 0.0)
-                outputs[unit_id] = unit.generate_output(atk_sig)
+        for uid, unit in self.units.items():
+            sig = attack_signals.get(uid, 0.0)
+            outputs[uid] = unit.generate_output(sig)
         return outputs
 
-    def fuse_outputs(self, outputs):
-        label_weights = defaultdict(float)
-        for unit_id, label in outputs.items():
-            unit = self.units.get(unit_id)
-            if unit and unit.active:
-                label_weights[label] += unit.weight
-        if not label_weights:
-            return None
-        return max(label_weights.items(), key=lambda x: x[1])[0]
+    def compute_entropy(self, label_weights):
+        total = sum(label_weights.values())
+        if total == 0:
+            return 1.0
+        return -sum((w / total) * math.log2(w / total) for w in label_weights.values() if w > 0)
 
-    def update_feedback(self, outputs, fused_output):
-        """
-        统一在这里更新每个执行体状态（替代原 ExecutionUnit.update 方法）
-        """
-        for unit_id, output in outputs.items():
-            unit = self.units.get(unit_id)
+    def fuse_outputs_with_replacement(self, outputs, entropy_threshold=0.8, trust_threshold=0.5):
+        label_weights = defaultdict(float)
+        for uid, lbl in outputs.items():
+            unit = self.units.get(uid)
+            if unit and unit.active:
+                label_weights[lbl] += unit.weight
+
+        if not label_weights:
+            print("[警告] 无在线的执行体，执行体全量替换")
+            self._replace_all_units()
+            return CORRECT_SIGNAL
+
+        entropy = self.compute_entropy(label_weights)
+
+        labels = set(label_weights.keys())
+        majority_label = max(label_weights.items(), key=lambda x: x[1])[0]
+        other_labels = labels - {majority_label}
+        other_label = other_labels.pop() if other_labels else None
+
+        print(f"[熵信息] 熵值: {entropy:.4f}, 主标签: {majority_label}")
+
+        def avg_accuracy(label):
+            if label is None:
+                return 0.0
+            units = [self.units[uid] for uid, lbl in outputs.items()
+                     if lbl == label and self.units[uid].active]
+            if not units:
+                return 0.0
+            return sum(u.beta_accuracy() for u in units) / len(units)
+
+        majority_acc = avg_accuracy(majority_label)
+        other_acc = avg_accuracy(other_label)
+
+        print(f"[准确率] 主标签 {majority_label} 平均准确率: {majority_acc:.3f}")
+        if other_label is not None:
+            print(f"[准确率] 另一标签 {other_label} 平均准确率: {other_acc:.3f}")
+
+        # 熵大且主标签准确率低于另一标签，触发替换
+        if entropy > entropy_threshold and majority_acc < other_acc:
+            print("[触发替换] 熵大且主标签准确率低于另一标签，触发执行体替换")
+            self._replace_all_units()
+            return CORRECT_SIGNAL
+
+        # 主标签准确率足够高，返回主标签
+        if majority_acc >= trust_threshold:
+            return majority_label
+
+        # 主标签准确率不够高但另一标签达标，返回另一标签
+        if other_acc >= trust_threshold:
+            print(f"[返回另一标签] 主标签准确率低，返回另一标签 {other_label}")
+            return other_label
+
+        # 两者准确率都不达标，触发替换
+        print("[软降级] 主标签和另一标签准确率均低，触发执行体替换")
+        self._replace_all_units()
+        return CORRECT_SIGNAL
+
+    def update_feedback(self, outputs, fused_output, trust_threshold=0.5):
+        for uid, out in outputs.items():
+            unit = self.units.get(uid)
             if not unit:
                 continue
 
-            is_correct = (output == fused_output)
+            is_correct = (out == fused_output)
+            unit.record_result(is_correct)
 
-            if unit.soft_retired:
-                # 软下线状态下，输出正确则恢复
-                if is_correct:
-                    unit.consecutive_errors = 0
-                    unit.soft_retired = False
-                    unit.active = True
-                    print(f"[恢复] 执行体 {unit.unit_id} 恢复上线")
-                else:
-                    unit.consecutive_errors += 1
-                continue
-
-            # 激活状态下更新连续错误计数
-            if is_correct:
-                unit.consecutive_errors = 0
-            else:
-                unit.consecutive_errors += 1
-                if unit.consecutive_errors >= unit.error_threshold:
-                    unit.soft_retired = True
-                    unit.active = False
-                    print(f"[软下线] 执行体 {unit.unit_id} 连续错误{unit.consecutive_errors}次，暂时下线")
-
-    # 其他方法保持不变
-
+            # 软下线条件：准确率低于阈值 或 本轮输出与融合结果不一致
+            acc = unit.beta_accuracy()
+            if unit.active and (acc < trust_threshold or not is_correct):
+                unit.soft_retired = True
+                unit.active = False
+                print(f"[软下线] 执行体 {uid} 的准确率 {acc:.2f} 低于阈值 {trust_threshold} 或输出与融合结果不符")
 
     def update_weights(self, decay_factor=0.5):
-        """
-        动态调整执行体权重：连续错误越多，权重越小
-        """
-        for unit in self.units.values():
-            unit.weight = math.exp(-decay_factor * unit.consecutive_errors)
+        temp = {}
+        for uid, unit in self.units.items():
+            if unit.soft_retired:
+                unit.weight = 0.0
+                continue
 
-        total_weight = sum(u.weight for u in self.units.values())
-        if total_weight > 0:
-            for u in self.units.values():
-                u.weight /= total_weight  # 归一化权重
+            beta_mean = unit.beta_accuracy()
+            penalty = math.exp(-decay_factor * (1 - beta_mean))  # 越不准惩罚越重
+            temp[uid] = beta_mean * penalty
+
+        total = sum(temp.values())
+        if total == 0:
+            avg = 1.0 / len(self.units)
+            for unit in self.units.values():
+                unit.weight = avg
         else:
-            # 所有权重为0，则均分
-            n = len(self.units)
-            for u in self.units.values():
-                u.weight = 1.0 / n
+            for uid, score in temp.items():
+                self.units[uid].weight = score / total
 
-    def try_replace_if_needed(self):
-        """
-        如果当前活跃执行体数量小于最小要求，尝试替换软下线中最差的一个
-        """
-        active_units = [u for u in self.units.values() if u.active]
-        if len(active_units) >= self.min_active_units:
-            return
-
-        soft_retired_units = [u for u in self.units.values() if u.soft_retired]
-        if not soft_retired_units:
-            print("[替换] 无软下线执行体可替换")
-            return
-
-        # 找出连续错误最多的软下线执行体并替换
-        worst = max(soft_retired_units, key=lambda u: u.consecutive_errors)
-        print(f"[替换] 替换软下线执行体 {worst.unit_id}")
-        del self.units[worst.unit_id]
-
-        new_id = worst.unit_id + "_new"
-        self.add_unit(new_id)
-        print(f"[添加] 新执行体 {new_id} 已上线")
+    def _replace_all_units(self):
+        old_ids = list(self.units.keys())
+        self.units.clear()
+        for oid in old_ids:
+            self.add_unit(oid + "_replaced")
+        print("[替换] 所有执行体已替换")
 
     def get_status(self):
-        """
-        获取当前所有执行体的状态信息
-        """
         status = {}
-        for uid, u in self.units.items():
+        for uid, unit in self.units.items():
             status[uid] = {
-                "weight": round(u.weight, 3),
-                "active": u.active,
-                "soft_retired": u.soft_retired,
-                "error_count": u.consecutive_errors,
+                "weight": round(unit.weight, 3),
+                "active": unit.active,
+                "soft_retired": unit.soft_retired,
+                "recent_correct": sum(unit.recent_results),
+                "total_in_window": len(unit.recent_results),
+                "beta_mean_accuracy": round(unit.beta_accuracy(), 3)
             }
         return status
-
-# === 示例主程序 ===
-if __name__ == "__main__":
-    fusion = FusionSystem(min_active_units=3)
-
-    # 初始化5个执行体
-    for i in range(1, 6):
-        fusion.add_unit(f"unit_{i}", weight=1.0, error_threshold=3, attack_threshold=0.6)
-
-    # 模拟攻击场景序列
-    attack_scenarios = [
-        {"unit_1": 0.1, "unit_2": 0.1, "unit_3": 0.8, "unit_4": 0.1, "unit_5": 0.1},
-        {"unit_1": 0.8, "unit_2": 0.1, "unit_3": 0.8, "unit_4": 0.1, "unit_5": 0.1},
-        {"unit_1": 0.8, "unit_2": 0.8, "unit_3": 0.8, "unit_4": 0.8, "unit_5": 0.1},
-        {"unit_1": 0.8, "unit_2": 0.8, "unit_3": 0.8, "unit_4": 0.8, "unit_5": 0.1},
-        {"unit_1": 0.8, "unit_2": 0.8, "unit_3": 0.8, "unit_4": 0.8, "unit_5": 0.8},
-        {"unit_1": 0.1, "unit_2": 0.8, "unit_3": 0.8, "unit_4": 0.8, "unit_5": 0.8},
-        {"unit_1": 0.1, "unit_2": 0.8, "unit_3": 0.8, "unit_4": 0.8, "unit_5": 0.8},
-    ]
-
-    # 模拟每一轮攻击并输出系统状态
-    for i, atk in enumerate(attack_scenarios):
-        print(f"\n--- Round {i + 1} ---")
-        outputs = fusion.collect_outputs(atk)  # 收集输出
-        fused = fusion.fuse_outputs(outputs)  # 融合输出
-        print(f"攻击输入: {atk}")
-        print(f"输出: {outputs}")
-        print(f"融合输出: {fused}")
-        fusion.update_feedback(outputs, fused)  # 更新执行体状态
-        fusion.update_weights()  # 更新权重
-        fusion.try_replace_if_needed()  # 尝试替换下线执行体
-        print(f"状态: {fusion.get_status()}")  # 输出当前状态
