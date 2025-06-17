@@ -219,26 +219,6 @@ class GlobalAttackSimulator:
             logger.info("-" * 30)
         return results
         
-    def reset_simulation(self):
-        """重置模拟状态"""
-        # 重新创建一个新的融合系统
-        num_units = len(self.fusion_system.units)
-        min_active_units = self.fusion_system.min_active_units
-        
-        self.fusion_system = FusionSystem(min_active_units=min_active_units)
-        
-        # 重新添加执行单元
-        for i in range(num_units):
-            unit_id = f"unit_{i}"
-            defense_threshold = random.uniform(0.3, 0.8)  # 随机防御阈值
-            self.fusion_system.add_unit(unit_id, 
-                                      weight=1.0, 
-                                      error_threshold=3, 
-                                      attack_threshold=defense_threshold)
-            
-        self.attack_history.clear()
-        self.simulation_rounds = 0
-        self.vanilla_replacement_count = 0  # 重置替换次数计数器
         
     def get_simulation_summary(self) -> Dict:
         """获取模拟结果摘要"""

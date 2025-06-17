@@ -2,6 +2,8 @@ from collections import defaultdict
 import random
 from logger_config import default_logger as logger
 
+# random.seed(42)  # 固定随机种子以确保可重复性
+
 # === 全局变量定义 ===
 CORRECT_SIGNAL = "A"  # 正确信号
 ERROR_SIGNAL = "B"    # 错误信号
@@ -168,7 +170,7 @@ class vanilleDHR:
         for oid in old_ids:
             defense_threshold = random.uniform(0.0, 1.0)  # 随机生成攻击阈值
             # defense_threshold = 0.5
-            self.add_unit(oid + "_replaced", attack_threshold=defense_threshold)
+            self.add_unit(oid, attack_threshold=defense_threshold)
         self.checkFlag  = True  # 标记替换操作已发生
         print("[替换] 所有执行体已替换")
         

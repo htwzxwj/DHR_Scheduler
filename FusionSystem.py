@@ -30,7 +30,7 @@ class ExecutionUnit:
     def generate_output(self, attack_signal):
         return ERROR_SIGNAL if attack_signal > self.attack_threshold else CORRECT_SIGNAL
 
-    def record_result(self, is_correct):
+    def record_result(self, is_correct, trust_threshold=0.5):
         self.recent_results.append(is_correct)
         if self.soft_retired:
             if is_correct:
@@ -42,11 +42,15 @@ class ExecutionUnit:
             else:
                 self.consecutive_corrects = 0
         else:
-            if not is_correct:
+            acc = self.beta_accuracy()
+            if not is_correct or acc < trust_threshold: # type: ignore
                 self.soft_retired = True
                 self.active = False
                 self.consecutive_corrects = 0
-                logger.warning(f"[软下线] 执行体 {self.unit_id} 输出与融合结果不一致，疑似被攻击")
+                # logger.warning(f"[软下线] 执行体 {self.unit_id} 输出与融合结果不一致，疑似被攻击")
+
+                # 软下线条件：准确率低于阈值 或 本轮输出与融合结果不一致
+                logger.info(f"[软下线] 执行体 {self.unit_id} 的准确率 {acc:.2f} 低于阈值 {trust_threshold} 或输出与融合结果不符")
 
     def beta_accuracy(self):
         correct = sum(self.recent_results)
@@ -78,7 +82,7 @@ class FusionSystem:
             return 1.0
         return -sum((w / total) * math.log2(w / total) for w in label_weights.values() if w > 0)
 
-    def fuse_outputs_with_replacement(self, outputs, entropy_threshold=0.8, trust_threshold=0.9):
+    def fuse_outputs_with_replacement(self, outputs, entropy_threshold=0.9, trust_threshold=0.99):
         label_weights = defaultdict(float)
         for uid, lbl in outputs.items():
             unit = self.units.get(uid)
@@ -117,11 +121,18 @@ class FusionSystem:
             logger.info(f"[准确率] 另一标签 {other_label} 平均准确率: {other_acc:.3f}")
 
         # 熵大且主标签准确率低于另一标签，触发替换
-        if entropy > entropy_threshold and majority_acc < other_acc:
+        # if entropy > entropy_threshold and majority_acc < other_acc:
+        #     logger.info("[触发替换] 熵大且主标签准确率低于另一标签，触发执行体替换")
+        #     self.checkFlag = True
+        #     self._replace_all_units()
+        #     return CORRECT_SIGNAL
+
+        if majority_acc < other_acc:
             logger.info("[触发替换] 熵大且主标签准确率低于另一标签，触发执行体替换")
             self.checkFlag = True
             self._replace_all_units()
             return CORRECT_SIGNAL
+
 
         # 主标签准确率足够高，返回主标签
         if majority_acc >= trust_threshold:
@@ -147,12 +158,12 @@ class FusionSystem:
             is_correct = (out == fused_output)
             unit.record_result(is_correct)
 
-            # 软下线条件：准确率低于阈值 或 本轮输出与融合结果不一致
-            acc = unit.beta_accuracy()
-            if unit.active and (acc < trust_threshold or not is_correct):
-                unit.soft_retired = True
-                unit.active = False
-                logger.info(f"[软下线] 执行体 {uid} 的准确率 {acc:.2f} 低于阈值 {trust_threshold} 或输出与融合结果不符")
+            # # 软下线条件：准确率低于阈值 或 本轮输出与融合结果不一致
+            # acc = unit.beta_accuracy()
+            # if unit.active and (acc < trust_threshold or not is_correct):
+            #     unit.soft_retired = True
+            #     unit.active = False
+            #     logger.info(f"[软下线] 执行体 {uid} 的准确率 {acc:.2f} 低于阈值 {trust_threshold} 或输出与融合结果不符")
 
     def update_weights(self, decay_factor=0.5):
         temp = {}
@@ -178,7 +189,7 @@ class FusionSystem:
         old_ids = list(self.units.keys())
         self.units.clear()
         for oid in old_ids:
-            self.add_unit(oid + "_replaced")
+            self.add_unit(oid)
         logger.info("[替换] 所有执行体已替换")
 
     def get_status(self):
