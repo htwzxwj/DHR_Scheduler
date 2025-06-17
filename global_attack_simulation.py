@@ -4,17 +4,14 @@
 
 import random
 from typing import List, Dict, Optional
-from logger_config import setup_logger
+from logger_config import default_logger as logger
 from AttackSignalGenerator import AttackSignalGenerator
 
-# 设置日志记录器
-logger = setup_logger("GlobalAttackSimulator")
 
 
 # 直接从FusionSystem导入类和常量
 from FusionSystem import FusionSystem, CORRECT_SIGNAL, ERROR_SIGNAL
 from VanilleDHR import vanilleDHR
-# 注意：MTBF 统计数据现在封装在每个模拟器实例中，避免全局变量冲突
 
 class GlobalAttackSimulator:
     """全局攻击模拟器 - 每次攻击会影响所有执行体，可以使用不同的融合系统实现"""
@@ -38,29 +35,18 @@ class GlobalAttackSimulator:
         self.system_name = system_name
         self.attack_signal_generator = attack_signal_generator
         
-        # 初始化MTBF统计数据（实例级别，避免全局变量冲突）
-        self.global_mtbf = 0.0
-        self.global_total_failures = 0
-        self.global_total_runtime = 0
-        
         # 如果没有提供融合系统，则创建默认的FusionSystem
         if fusion_system is None:
             self.fusion_system = FusionSystem(min_active_units=min_active_units)
-            
-            # 创建执行体
-            for i in range(num_units):
-                unit_id = f"unit_{i}"
-                defense_threshold = random.uniform(0.3, 0.8)  # 随机防御阈值
-                self.fusion_system.add_unit(unit_id, 
-                                        weight=1.0, 
-                                        error_threshold=3, 
-                                        attack_threshold=defense_threshold)
         else:
             # 使用提供的融合系统
             self.fusion_system = fusion_system
         
         self.attack_history = []
         self.simulation_rounds = 0
+        
+        # 添加vanilleDHR替换次数跟踪
+        self.vanilla_replacement_count = 0
         
     def generate_attack_strength(self, min_strength: float = 0.1, max_strength: float = 1.0) -> float:
         """生成攻击强度"""
@@ -104,43 +90,41 @@ class GlobalAttackSimulator:
             "compromised_count": 0
         }
         
-        # 为每个执行单元生成攻击信号
+        # 为每个执行单元生成攻击信号（包括停用的单元）
         attack_signals = {}
         for unit_id, unit in self.fusion_system.units.items():
-            if unit.active:  # 只攻击活跃的单元
-                attack_signals[unit_id] = attack_strength
-                attack_result["total_attacks"] += 1
-                
-                # 判断攻击是否成功（比较攻击强度和防御阈值）
-                attack_success = attack_strength > unit.attack_threshold
-                
-                # 记录攻击结果
-                if attack_success:
-                    attack_result["successful_attacks"] += 1
-                    # 这个单元已经确认为活跃且被攻破，直接计数
-                    attack_result["compromised_count"] += 1
-                    
-                    # 更新MTBF统计 - 记录故障
-                    self.global_total_failures += 1
-                
-                # 添加本次攻击记录
-                target_result = {
-                    "unit_id": unit_id,
-                    "defense_threshold": unit.attack_threshold,
-                    "attack_success": attack_success,
-                    "status": "Attack Success" if attack_success else "Safe"
-                }
-                
-                attack_result["targets"].append(target_result)
+            # 为所有单元生成攻击信号，不管是否活跃
+            attack_signals[unit_id] = attack_strength
+            attack_result["total_attacks"] += 1
+            
+            # 判断攻击是否成功（比较攻击强度和防御阈值）
+            attack_success = attack_strength > unit.attack_threshold
+            
+            # 记录攻击结果
+            if attack_success:
+                attack_result["successful_attacks"] += 1
+                # 这个单元被攻破，直接计数
+                attack_result["compromised_count"] += 1
+            
+            # 添加本次攻击记录（所有单元都记录，不论是否活跃）
+            target_result = {
+                "unit_id": unit_id,
+                "defense_threshold": unit.attack_threshold,
+                "attack_success": attack_success,
+                "status": "Attack Success" if attack_success else "Safe",
+                "active": unit.active  # 记录单元是否活跃
+            }
+            
+            attack_result["targets"].append(target_result)
         
         # 收集所有执行体的输出信号
         outputs = self.fusion_system.collect_outputs(attack_signals)
         # Log inactive units
         inactive_units = [unit for unit_id, unit in self.fusion_system.units.items() if not unit.active]
         if inactive_units:
-            logger.info(f"Inactive units ({len(inactive_units)}):")
+            logger.info(f"下线了{len(inactive_units)}个执行体：")
             for unit in inactive_units:
-                unit_info = f"  Unit ID: {unit.unit_id}, "
+                unit_info = f"  下线的执行体ID: {unit.unit_id}, "
                 logger.info(unit_info)
 
         # 融合输出信号
@@ -149,12 +133,16 @@ class GlobalAttackSimulator:
         # 更新执行体状态
         self.fusion_system.update_feedback(outputs, fused_output)
         
+        # 检查vanilleDHR是否发生了替换操作
+        if self.fusion_system.checkFlag:
+            self.vanilla_replacement_count += 1
+            self.fusion_system.checkFlag = False  # 重置标志
+            logger.info(f"{self.system_name}: replacement occurred (total replacements: {self.vanilla_replacement_count})")
+        
         # # 对于FusionSystem类，可以更新权重和替换下线执行体
         if hasattr(self.fusion_system, 'update_weights') and callable(getattr(self.fusion_system, 'update_weights')):
             self.fusion_system.update_weights()
             
-        # if hasattr(self.fusion_system, 'try_replace_if_needed') and callable(getattr(self.fusion_system, 'try_replace_if_needed')):
-        #     self.fusion_system.try_replace_if_needed()
         
         # 将输出信号添加到攻击结果中
         attack_result["executor_outputs"] = outputs
@@ -177,9 +165,6 @@ class GlobalAttackSimulator:
             所有攻击结果列表
         """
         results = []
-        
-        # 更新全局运行时间
-        self.global_total_runtime += num_rounds
         
         for round_num in range(num_rounds):
             logger.info(f"\n {self.system_name}-Global Attack Round {round_num + 1}")
@@ -206,7 +191,6 @@ class GlobalAttackSimulator:
             
             # 记录本轮攻击结果（此时确保 result 不为 None）
             logger.info(f"Attack Strength: {result['attack_strength']:.3f}")
-            logger.info(f"Success Rate: {result['successful_attacks']}/{result['total_attacks']} ({result['successful_attacks']/max(1, result['total_attacks']):.2%})")
             
                 
             # 显示当前各执行体状态
@@ -254,11 +238,7 @@ class GlobalAttackSimulator:
             
         self.attack_history.clear()
         self.simulation_rounds = 0
-        
-        # 重置全局MTBF统计数据
-        self.global_mtbf = 0.0
-        self.global_total_failures = 0
-        self.global_total_runtime = 0
+        self.vanilla_replacement_count = 0  # 重置替换次数计数器
         
     def get_simulation_summary(self) -> Dict:
         """获取模拟结果摘要"""
@@ -292,34 +272,151 @@ class GlobalAttackSimulator:
             }
             unit_stats.append(stats)
         
-        # 计算系统平均无故障时间 (MTBF)
-        if self.global_total_failures > 0:
-            self.global_mtbf = self.global_total_runtime / self.global_total_failures
-        else:
-            self.global_mtbf = self.global_total_runtime  # 如果没有故障，MTBF等于总运行时间
-        
         return {
             "system_name": self.system_name,
             "total_rounds": self.simulation_rounds,
             "total_attacks": total_attacks,
             "successful_attacks": successful_attacks,
-            "success_rate": successful_attacks / max(1, total_attacks),
             "active_units": sum(1 for u in self.fusion_system.units.values() if u.active),
             "total_units": len(self.fusion_system.units),
+            "vanilla_replacement_count": self.vanilla_replacement_count,  # 添加vanilleDHR替换次数
             "unit_stats": unit_stats,
             "signal_stats": {
                 "correct_signals": correct_signals,
                 "error_signals": error_signals,
                 "fused_correct": fused_correct,
                 "fused_error": fused_error
-            },
-            "reliability_stats": {
-                "global_mtbf": self.global_mtbf,
-                "total_failures": self.global_total_failures,
-                "total_runtime": self.global_total_runtime
             }
         }
+    
+    def calculate_error_signal_rate(self) -> Dict:
+        """计算ERROR_SIGNAL的比例（错误率）
         
+        Returns:
+            包含错误率统计信息的字典
+        """
+        # 统计所有轮次中的输出信号
+        total_unit_signals = 0
+        error_unit_signals = 0
+        total_fused_signals = 0
+        error_fused_signals = 0
+        
+        for result in self.attack_history:
+            # 统计各执行体的输出信号
+            for unit_id, signal in result.get("executor_outputs", {}).items():
+                total_unit_signals += 1
+                if signal == ERROR_SIGNAL:
+                    error_unit_signals += 1
+            
+            # 统计融合输出信号
+            fused_output = result.get("fused_output")
+            if fused_output is not None:
+                total_fused_signals += 1
+                if fused_output == ERROR_SIGNAL:
+                    error_fused_signals += 1
+        
+        # 计算错误率
+        unit_error_rate = error_unit_signals / max(1, total_unit_signals)
+        fused_error_rate = error_fused_signals / max(1, total_fused_signals)
+        
+        return {
+            "system_name": self.system_name,
+            "unit_signals": {
+                "total": total_unit_signals,
+                "errors": error_unit_signals,
+                "error_rate": unit_error_rate
+            },
+            "fused_signals": {
+                "total": total_fused_signals,
+                "errors": error_fused_signals,
+                "error_rate": fused_error_rate
+            }
+        }
+    
+    def log_error_signal_rate(self):
+        """记录ERROR_SIGNAL错误率到日志"""
+        error_stats = self.calculate_error_signal_rate()
+        
+        logger.info(f"\n===== {error_stats['system_name']} Error Signal Rate Analysis =====")
+        
+        # 执行体信号错误率
+        unit_stats = error_stats['unit_signals']
+        logger.info(f"Unit Signals Error Rate:")
+        logger.info(f"  Total unit signals: {unit_stats['total']}")
+        logger.info(f"  ERROR_SIGNALs: {unit_stats['errors']}")
+        logger.info(f"  Error rate: {unit_stats['error_rate']:.2%}")
+        
+        # 融合信号错误率
+        fused_stats = error_stats['fused_signals']
+        logger.info(f"Fused Signals Error Rate:")
+        logger.info(f"  Total fused signals: {fused_stats['total']}")
+        logger.info(f"  ERROR_SIGNALs: {fused_stats['errors']}")
+        logger.info(f"  Error rate: {fused_stats['error_rate']:.2%}")
+        
+        return error_stats
+
+
+# 比较两个模拟器错误率的函数
+def compare_error_signal_rates(simulator1: GlobalAttackSimulator, simulator2: GlobalAttackSimulator):
+    """比较两个GlobalAttackSimulator的ERROR_SIGNAL错误率
+    
+    Args:
+        simulator1: 第一个攻击模拟器
+        simulator2: 第二个攻击模拟器
+    """
+    logger.info("\n" + "="*60)
+    logger.info("ERROR SIGNAL RATE COMPARISON")
+    logger.info("="*60)
+    
+    # 获取两个模拟器的错误率统计
+    error_stats1 = simulator1.calculate_error_signal_rate()
+    error_stats2 = simulator2.calculate_error_signal_rate()
+    
+    # 记录详细错误率信息
+    simulator1.log_error_signal_rate()
+    simulator2.log_error_signal_rate()
+    
+    # 比较分析
+    logger.info(f"\n===== Error Rate Comparison Summary =====")
+    
+    # 比较执行体信号错误率
+    unit_rate1 = error_stats1['unit_signals']['error_rate']
+    unit_rate2 = error_stats2['unit_signals']['error_rate']
+    unit_diff = abs(unit_rate1 - unit_rate2)
+    better_unit_system = error_stats1['system_name'] if unit_rate1 < unit_rate2 else error_stats2['system_name']
+    
+    logger.info(f"Unit Signals Error Rate Comparison:")
+    logger.info(f"  {error_stats1['system_name']}: {unit_rate1:.2%}")
+    logger.info(f"  {error_stats2['system_name']}: {unit_rate2:.2%}")
+    logger.info(f"  Difference: {unit_diff:.2%}")
+    logger.info(f"  Better system: {better_unit_system} (lower error rate is better)")
+    
+    # 比较融合信号错误率
+    fused_rate1 = error_stats1['fused_signals']['error_rate']
+    fused_rate2 = error_stats2['fused_signals']['error_rate']
+    fused_diff = abs(fused_rate1 - fused_rate2)
+    better_fused_system = error_stats1['system_name'] if fused_rate1 < fused_rate2 else error_stats2['system_name']
+    
+    logger.info(f"\nFused Signals Error Rate Comparison:")
+    logger.info(f"  {error_stats1['system_name']}: {fused_rate1:.2%}")
+    logger.info(f"  {error_stats2['system_name']}: {fused_rate2:.2%}")
+    logger.info(f"  Difference: {fused_diff:.2%}")
+    logger.info(f"  Better system: {better_fused_system} (lower error rate is better)")
+    
+    # 综合评估
+    logger.info(f"\nOverall Assessment:")
+    if unit_rate1 < unit_rate2 and fused_rate1 < fused_rate2:
+        logger.info(f"  {error_stats1['system_name']} performs better in both unit and fused signal error rates")
+    elif unit_rate1 > unit_rate2 and fused_rate1 > fused_rate2:
+        logger.info(f"  {error_stats2['system_name']} performs better in both unit and fused signal error rates")
+    else:
+        logger.info(f"  Mixed results: Each system has advantages in different aspects")
+        if unit_rate1 < unit_rate2:
+            logger.info(f"    {error_stats1['system_name']} has better unit signal reliability")
+            logger.info(f"    {error_stats2['system_name']} has better fused signal reliability")
+        else:
+            logger.info(f"    {error_stats2['system_name']} has better unit signal reliability")
+            logger.info(f"    {error_stats1['system_name']} has better fused signal reliability")
 
 # 用于记录模拟结果的帮助函数
 def log_simulation_results(summary):
@@ -329,8 +426,12 @@ def log_simulation_results(summary):
     logger.info(f"Total rounds: {summary['total_rounds']}")
     logger.info(f"Total attacks: {summary['total_attacks']}")
     logger.info(f"Successful attacks: {summary['successful_attacks']}")
-    logger.info(f"Attack success rate: {summary['success_rate']:.2%}")
     logger.info(f"Active units: {summary['active_units']}/{summary['total_units']}")
+    
+    # 显示vanilleDHR替换次数（如果存在）
+    replacement_count = summary.get("vanilla_replacement_count", 0)
+    if replacement_count > 0:
+        logger.info(f"replacement count: {replacement_count}")
     
     # 显示输出信号统计
     signal_stats = summary.get("signal_stats", {})
@@ -339,13 +440,6 @@ def log_simulation_results(summary):
     logger.info(f"Error Signals: {signal_stats.get('error_signals', 0)}")
     logger.info(f"Fused Correct: {signal_stats.get('fused_correct', 0)}")
     logger.info(f"Fused Error: {signal_stats.get('fused_error', 0)}")
-    
-    # 显示可靠性统计（MTBF）
-    reliability_stats = summary.get("reliability_stats", {})
-    logger.info("\nReliability Statistics:")
-    logger.info(f"Global Mean Time Between Failures (MTBF): {reliability_stats.get('global_mtbf', 0):.2f} cycles")
-    logger.info(f"Total Failures: {reliability_stats.get('total_failures', 0)}")
-    logger.info(f"Total Runtime: {reliability_stats.get('total_runtime', 0)} cycles")
 
 # 保持向后兼容的打印函数
 def print_simulation_results(summary):
@@ -356,8 +450,8 @@ def print_simulation_results(summary):
 if __name__ == "__main__":
     NUM_UNITS = 5
     MIN_ACTIVE_UNITS = 3
-    RANDOM_SEED = 114514
-    NUM_ROUNDS = 100
+    RANDOM_SEED = 42
+    NUM_ROUNDS = 1000
     ATTACK_MIN_STRENGTH = 0.0
     ATTACK_MAX_STRENGTH = 1.0
 
@@ -367,6 +461,7 @@ if __name__ == "__main__":
     logger.info("\n" + "="*60)
     logger.info("COMPARING FUSION SYSTEMS: FusionSystem vs vanilleDHR")
     logger.info("="*60)
+    defense_thresholds = [random.uniform(0.0, 1.0) for _ in range(NUM_UNITS)]  # ! 随机生成的防御阈值
     
     # 1. 创建FusionSystem实例
     logger.info("\n[1] Creating adaptive FusionSystem...")
@@ -375,12 +470,13 @@ if __name__ == "__main__":
     # 添加执行单元
     for i in range(NUM_UNITS):
         unit_id = f"unit_{i}"
-        defense_threshold = random.uniform(0, 1)  # 随机防御阈值
+        # defense_threshold = 0.3  + 0.05 * i
+        # defense_threshold = 0.5
         fusion_system.add_unit(
             unit_id=unit_id, 
             weight=1.0, 
             error_threshold=1, 
-            attack_threshold=defense_threshold
+            attack_threshold=defense_thresholds[i]
         )
     
     # 2. 创建vanilleDHR实例
@@ -390,10 +486,9 @@ if __name__ == "__main__":
     # 添加相同配置的执行单元
     for i in range(NUM_UNITS):
         unit_id = f"unit_{i}"
-        defense_threshold = random.uniform(0, 1)  # 随机防御阈值
         vanilla_dhr.add_unit(
             unit_id=unit_id, 
-            attack_threshold=defense_threshold
+            attack_threshold=defense_thresholds[i]
         )
     
     # 3. 创建攻击信号生成器（确保两个模拟器使用相同的攻击序列）
@@ -468,44 +563,30 @@ if __name__ == "__main__":
     logger.info("SIMULATION COMPARISON SUMMARY")
     logger.info("="*60)
     
-    # 计算并比较成功率
-    adaptive_success_rate = adaptive_summary["success_rate"]
-    vanilla_success_rate = vanilla_summary["success_rate"]
-    rate_diff = abs(adaptive_success_rate - vanilla_success_rate)
-    better_system = "Adaptive FusionSystem" if adaptive_success_rate < vanilla_success_rate else "Static vanilleDHR"
+    # 比较vanilleDHR替换次数
+    adaptive_replacements = adaptive_summary.get("vanilla_replacement_count", 0)
+    vanilla_replacements = vanilla_summary.get("vanilla_replacement_count", 0)
     
-    logger.info(f"Attack Success Rate:")
-    logger.info(f"- Adaptive FusionSystem: {adaptive_success_rate:.2%}")
-    logger.info(f"- Static vanilleDHR: {vanilla_success_rate:.2%}")
-    logger.info(f"- Difference: {rate_diff:.2%}")
-    logger.info(f"- Better system: {better_system} (lower is better)\n")
+    logger.info(f"VanilleDHR Replacement Count:")
+    logger.info(f"- Adaptive FusionSystem: {adaptive_replacements}")
+    logger.info(f"- Static vanilleDHR: {vanilla_replacements}")
+    if adaptive_replacements != vanilla_replacements:
+        logger.info(f"- Difference: {abs(adaptive_replacements - vanilla_replacements)}")
+        if vanilla_replacements > adaptive_replacements:
+            logger.info("- Static vanilleDHR had more replacements")
+        else:
+            logger.info("- Adaptive FusionSystem had more replacements")
+    else:
+        logger.info("- Both systems had the same number of replacements")
     
-    # 比较MTBF
-    adaptive_mtbf = adaptive_summary["reliability_stats"]["global_mtbf"]
-    vanilla_mtbf = vanilla_summary["reliability_stats"]["global_mtbf"]
-    mtbf_ratio = adaptive_mtbf / vanilla_mtbf if vanilla_mtbf > 0 else float('inf')
-    better_mtbf_system = "Adaptive FusionSystem" if adaptive_mtbf > vanilla_mtbf else "Static vanilleDHR"
+    # 8. 错误信号率分析
+    logger.info("\n[8] Analyzing ERROR_SIGNAL rates...")
+    compare_error_signal_rates(adaptive_simulator, vanilla_simulator)
     
-    logger.info(f"Mean Time Between Failures (MTBF):")
-    logger.info(f"- Adaptive FusionSystem: {adaptive_mtbf:.2f} cycles")
-    logger.info(f"- Static vanilleDHR: {vanilla_mtbf:.2f} cycles")
-    logger.info(f"- Ratio: {mtbf_ratio:.2f}x")
-    logger.info(f"- Better system: {better_mtbf_system} (higher is better)")
+    logger.info("\n" + "="*60)
+    logger.info("SIMULATION COMPLETED SUCCESSFULLY")
+    logger.info("="*60)
     
-    logger.info("\nFinal execution unit states (Adaptive):")
-    for stats in adaptive_summary['unit_stats']:
-        logger.info(f"Unit {stats['id']}: "
-              f"Attack threshold: {stats['attack_threshold']:.3f}, "
-              f"Weight: {stats['weight']:.3f}, "
-              f"Active: {'Yes' if stats['active'] else 'No'}, "
-              f"Soft retired: {'Yes' if stats['soft_retired'] else 'No'}, "
-              f"consecutive_corrects: {stats['consecutive_corrects']}")
-              
-    logger.info("\nFinal execution unit states (Vanilla):")
-    for stats in vanilla_summary['unit_stats']:
-        logger.info(f"Unit {stats['id']}: "
-              f"Attack threshold: {stats['attack_threshold']:.3f}, "
-              f"Weight: {stats['weight']:.3f}, "
-              f"Active: {'Yes' if stats['active'] else 'No'}, "
-              f"Soft retired: {'Yes' if stats.get('soft_retired', False) else 'No'}, "
-              f"consecutive_corrects: {stats['consecutive_corrects']}")
+    # 8. 比较错误率
+    logger.info("\n[8] Comparing ERROR_SIGNAL rates...\n")
+    compare_error_signal_rates(adaptive_simulator, vanilla_simulator)

@@ -1,4 +1,6 @@
 from collections import defaultdict
+import random
+from logger_config import default_logger as logger
 
 # === 全局变量定义 ===
 CORRECT_SIGNAL = "A"  # 正确信号
@@ -20,10 +22,17 @@ class ExecutionUnit:
         return ERROR_SIGNAL if attack_signal > self.attack_threshold else CORRECT_SIGNAL
 
     def record_result(self, is_correct):
-        if not is_correct and self.active:
-            self.active = False
-            self.consecutive_corrects = 0
-            print(f"[vanilleDHR] 执行体 {self.unit_id} 输出与融合结果不一致，疑似被攻击，已置为非活跃状态")
+        if self.active:
+            if not is_correct:
+                self.active = False
+                self.consecutive_corrects = 0
+                print(f"[vanilleDHR] 执行体 {self.unit_id} 输出与融合结果不一致，疑似被攻击，已置为非活跃状态")
+        else:
+            if is_correct:
+                self.consecutive_corrects += 1
+                if self.consecutive_corrects >= self.recovery_threshold:
+                    self.active = True
+                    logger.warning(f"[恢复] 执行体 {self.unit_id} 连续正确 {self.recovery_threshold} 次，已恢复上线")
 
 
 class vanilleDHR:
@@ -58,10 +67,14 @@ class vanilleDHR:
         )
     
     def collect_outputs(self, attack_signals):
+        """
+        收集所有单元的输出信号，包括非活跃单元
+        """
         outputs = {}
         for unit_id, unit in self.units.items():
             attack_strength = attack_signals.get(unit_id, 0.0)
-            outputs[unit_id] = unit.generate_output(attack_strength)   
+            # 所有单元都生成输出，不论是否活跃
+            outputs[unit_id] = unit.generate_output(attack_strength)
         return outputs
     
     def fuse_outputs_with_replacement(self, outputs):
@@ -153,7 +166,9 @@ class vanilleDHR:
         old_ids = list(self.units.keys())
         self.units.clear()
         for oid in old_ids:
-            self.add_unit(oid + "_replaced", attack_threshold=0.5)
-        print("[替换] 所有执行体已替换")
-
+            defense_threshold = random.uniform(0.0, 1.0)  # 随机生成攻击阈值
+            # defense_threshold = 0.5
+            self.add_unit(oid + "_replaced", attack_threshold=defense_threshold)
         self.checkFlag  = True  # 标记替换操作已发生
+        print("[替换] 所有执行体已替换")
+        
