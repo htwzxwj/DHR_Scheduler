@@ -1,13 +1,10 @@
 from collections import defaultdict
 import random
 from logger_config import default_logger as logger
-from FusionSystem import ExecutionUnit
+from FusionSystem import ExecutionUnit, CORRECT_SIGNAL, ERROR_SIGNAL, SCHEDULED_SIGNAL
 
 # random.seed(42)  # 固定随机种子以确保可重复性
 
-# === 全局变量定义 ===
-CORRECT_SIGNAL = "A"  # 正确信号
-ERROR_SIGNAL = "B"    # 错误信号
 
 class vanilleDHR:
     def __init__(self, min_active_units=2):
@@ -34,7 +31,7 @@ class vanilleDHR:
     def output(self):
         fused_output = self.judge()  # ! 融合裁决
         self.schedule() # ! 调度
-        self.update_feedback(fused_output)
+        self.update_feedback(self.outputs, fused_output)
         return fused_output
     
     def recover(self):
@@ -48,7 +45,7 @@ class vanilleDHR:
         if (len(active_units) < self.min_active_units):
             logger.warning("[警告] 活跃执行体数量少于最小要求，执行体全量替换")
             self.isScheduled = True
-            return CORRECT_SIGNAL  # 返回正确信号以避免错误输出
+            return SCHEDULED_SIGNAL  # 返回正确信号以避免错误输出
         
         for uid, output in outputs.items():
             unit = self.units.get(uid)
@@ -62,23 +59,21 @@ class vanilleDHR:
         # 如果平局且包含正确信号，则优先返回正确信号
         if len(ties) > 1:
             self.isScheduled = True  # 标记替换操作已发生
-            return CORRECT_SIGNAL
+            return SCHEDULED_SIGNAL
         else: 
             return max_vote[0]
 
     
-    def update_feedback(self, fused_output, trust_threshold=0.3):
-        outputs = self.outputs
+    def update_feedback(self, outputs, fused_output):
+        # outputs = self.outputs
         for uid, out in outputs.items():
             unit = self.units.get(uid)
             if not unit:
                 continue
 
-            is_correct = (out == fused_output)
-            if unit.active and not is_correct:
-                unit.active = False
+            is_correct = (out == fused_output) if fused_output != SCHEDULED_SIGNAL else False
 
-            # unit.record_result(is_correct)
+            unit.record_result(is_correct, fused_output)
 
     
     def schedule(self):

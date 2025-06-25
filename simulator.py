@@ -1,4 +1,4 @@
-from FusionSystem import CORRECT_SIGNAL, ERROR_SIGNAL, FusionSystem
+from FusionSystem import CORRECT_SIGNAL, ERROR_SIGNAL, FusionSystem, SCHEDULED_SIGNAL
 from VanilleDHR import vanilleDHR
 import random
 random.seed(42)
@@ -53,10 +53,11 @@ for i in range(NUM_ROUNDS):
         logger.info(f"Fusion Fused Output: {fused_output}")
         if fused_output == CORRECT_SIGNAL:
             fusion_A_count += 1
-        elif fused_output == ERROR_SIGNAL:
+        elif fused_output != CORRECT_SIGNAL:
             fusion_B_count += 1
 
         for unit_id, unit in fusion_system.units.items():
+            pass
             logger.info(f"FusionSystem执行体 {unit_id} 权重: {unit.weight}")
         
 
@@ -68,16 +69,19 @@ for i in range(NUM_ROUNDS):
         dhr.recover()
     
         output = dhr.collect_outputs(attack_signals)
+        logger.info(f"DHR Active Units: {[uid for uid, unit in dhr.units.items() if unit.active]}")
         logger.info(f"DHR Outputs: {output}")
         fused_output = dhr.output()
         logger.info(f"DHR Fused Output: {fused_output}")
         if fused_output == CORRECT_SIGNAL:
             dhr_A_count += 1
-        elif fused_output == ERROR_SIGNAL:
+        elif fused_output != CORRECT_SIGNAL:
             dhr_B_count += 1
 
-logger.info(f"FusionSystem输出A次数: {fusion_A_count}, 输出B次数: {fusion_B_count}")
-logger.info(f"vanilleDHR输出A次数: {dhr_A_count}, 输出B次数: {dhr_B_count}")
+
+logger.info(f"FusionSystem输出A次数: {fusion_A_count}, 输出B次数: {fusion_B_count}，准确率: {fusion_A_count / (fusion_A_count + fusion_B_count):.2f}")
+logger.info(f"vanilleDHR输出A次数: {dhr_A_count}, 输出B次数: {dhr_B_count}，准确率: {dhr_A_count / (dhr_A_count + dhr_B_count):.2f}")
 
 logger.info(f"融合系统调度次数: {fusion_system.scheduledNum}")
 logger.info(f"DHR系统调度次数: {dhr.scheduledNum}")
+logger.info(f"融合系统平均调度时间: {(dhr.scheduledNum - fusion_system.scheduledNum) / dhr.scheduledNum:.2f}")
