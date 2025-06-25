@@ -6,12 +6,80 @@ import random
 from typing import List, Dict, Optional
 from logger_config import default_logger as logger
 from AttackSignalGenerator import AttackSignalGenerator
-
-
+import matplotlib.pyplot as plt
+import os
 
 # 直接从FusionSystem导入类和常量
 from FusionSystem import FusionSystem, CORRECT_SIGNAL, ERROR_SIGNAL
 from VanilleDHR import vanilleDHR
+
+def plot_unit_errors_and_schedule(simulator, save_dir=".", prefix="result"):
+    """
+    绘制每个执行体随时间步的错误次数，以及整体调度次数
+    """
+    
+    history = simulator.attack_history
+    # 获取所有历史中出现过的unit_id，防止只统计最后还活着的unit
+    unit_ids = set()
+    for result in history:
+        unit_ids.update(result.get("executor_outputs", {}).keys())
+    unit_ids = sorted(unit_ids)
+    num_rounds = len(history)
+    error_counts = {uid: [0]*num_rounds for uid in unit_ids}
+    schedule_counts = []
+
+    for i, result in enumerate(history):
+        # 统计每个unit本轮是否错误
+        outputs = result.get("executor_outputs", {})
+        
+        active_count = 0
+        for uid in unit_ids:
+            if uid in outputs and outputs[uid] == ERROR_SIGNAL:
+                error_counts[uid][i] = 1
+            # 统计活跃执行体
+            if uid in simulator.fusion_system.units and simulator.fusion_system.units[uid].active:
+                active_count += 1
+        schedule_counts.append(active_count)
+
+    # 累计错误次数
+    cumulative_errors = {uid: [] for uid in unit_ids}
+    for uid in unit_ids:
+        total = 0
+        for v in error_counts[uid]:
+            total += v
+            cumulative_errors[uid].append(total)
+
+    # Plotting
+    plt.figure(figsize=(12, 6))
+    for uid in unit_ids:
+        plt.plot(range(1, num_rounds+1), cumulative_errors[uid], label=f"{uid} cumulative errors")
+    plt.xlabel("Time Step (Round)")
+    plt.ylabel("Cumulative Error Count")
+    plt.title(f"{simulator.system_name} Cumulative Errors per Unit")
+    plt.legend()
+    plt.grid(True)
+    png_path = os.path.join(save_dir, f"{prefix}_unit_errors.png")
+    pdf_path = os.path.join(save_dir, f"{prefix}_unit_errors.pdf")
+    plt.savefig(png_path)
+    plt.savefig(pdf_path)
+    plt.close()
+
+    # Plot schedule counts
+    plt.figure(figsize=(12, 4))
+    plt.plot(range(1, num_rounds+1), schedule_counts, marker='o')
+    plt.xlabel("Time Step (Round)")
+    plt.ylabel("Scheduled (Active Units) Count")
+    plt.title(f"{simulator.system_name} Active Units per Round")
+    plt.grid(True)
+    png_path2 = os.path.join(save_dir, f"{prefix}_schedule_counts.png")
+    pdf_path2 = os.path.join(save_dir, f"{prefix}_schedule_counts.pdf")
+    plt.savefig(png_path2)
+    plt.savefig(pdf_path2)
+    plt.close()
+
+    print(f"Figures saved as: {png_path}, {pdf_path}, {png_path2}, {pdf_path2}")
+
+
 
 class GlobalAttackSimulator:
     """全局攻击模拟器 - 每次攻击会影响所有执行体，可以使用不同的融合系统实现"""
@@ -449,11 +517,10 @@ if __name__ == "__main__":
     
     # 添加执行单元
     for i in range(NUM_UNITS):
-        unit_id = f"unit_{i}"
         # defense_threshold = 0.3  + 0.05 * i
         # defense_threshold = 0.5
         fusion_system.add_unit(
-            unit_id=unit_id, 
+            unit_id=f"unit_{i}", 
             weight=1.0, 
             error_threshold=1, 
             attack_threshold=defense_thresholds[i]
@@ -570,3 +637,9 @@ if __name__ == "__main__":
     # 8. 比较错误率
     logger.info("\n[8] Comparing ERROR_SIGNAL rates...\n")
     compare_error_signal_rates(adaptive_simulator, vanilla_simulator)
+
+
+
+    # 示例调用（在主流程模拟结束后）：
+    plot_unit_errors_and_schedule(adaptive_simulator, save_dir=".", prefix="adaptive")
+    plot_unit_errors_and_schedule(vanilla_simulator, save_dir=".", prefix="vanilla")

@@ -1,6 +1,7 @@
 from collections import defaultdict
 import random
 from logger_config import default_logger as logger
+from FusionSystem import ExecutionUnit
 
 # random.seed(42)  # 固定随机种子以确保可重复性
 
@@ -8,79 +9,46 @@ from logger_config import default_logger as logger
 CORRECT_SIGNAL = "A"  # 正确信号
 ERROR_SIGNAL = "B"    # 错误信号
 
-class ExecutionUnit:
-    def __init__(self, unit_id, weight=1.0, error_threshold=1, recovery_threshold=1,
-                 attack_threshold=0.5):
-        self.unit_id = unit_id
-        self.weight = weight
-        self.error_threshold = error_threshold
-        self.recovery_threshold = recovery_threshold
-        self.attack_threshold = attack_threshold
-        self.active = True
-        self.consecutive_corrects = 0
-
-
-    def generate_output(self, attack_signal):
-        return ERROR_SIGNAL if attack_signal > self.attack_threshold else CORRECT_SIGNAL
-
-    def record_result(self, is_correct):
-        if self.active:
-            if not is_correct:
-                self.active = False
-                self.consecutive_corrects = 0
-                print(f"[vanilleDHR] 执行体 {self.unit_id} 输出与融合结果不一致，疑似被攻击，已置为非活跃状态")
-        else:
-            if is_correct:
-                self.consecutive_corrects += 1
-                if self.consecutive_corrects >= self.recovery_threshold:
-                    self.active = True
-                    logger.warning(f"[恢复] 执行体 {self.unit_id} 连续正确 {self.recovery_threshold} 次，已恢复上线")
-
-
 class vanilleDHR:
-    """
-    简化版分布式异构冗余系统，所有执行体权重相等，基于少数服从多数原则进行投票
-    不包含参数更新、软下线等复杂功能，直接使用ExecutionUnit构建执行体
-    """
-    def __init__(self, min_active_units=3):
-        """
-        初始化基本DHR系统
-        
-        Args:
-            min_active_units: 最小活跃单元数量
-        """
-        self.units = {}  # 存储所有执行单元
+    def __init__(self, min_active_units=2):
+        self.units = {}
         self.min_active_units = min_active_units
-        self.checkFlag = False
-        
-    def add_unit(self, unit_id, attack_threshold=0.5):
-        """
-        添加一个执行单元
-        
-        Args:
-            unit_id: 执行单元ID
-            attack_threshold: 攻击阈值，用于决定输出信号
-        """
-        # 使用ExecutionUnit类创建执行单元，将weight固定为1.0
-        self.units[unit_id] = ExecutionUnit(
-            unit_id=unit_id, 
-            weight=1.0,  # 固定权重为1.0
-            attack_threshold=attack_threshold
-        )
-    
+        self.isScheduled = False  # 是否需要调度
+        self.scheduledNum = 0
+        self.outputs = {}  # 每个执行体的输出，{id，输出}
+
+    def add_unit(self, unit_id, **kwargs):
+        self.units[unit_id] = ExecutionUnit(unit_id, **kwargs)
+
     def collect_outputs(self, attack_signals):
-        """
-        收集所有单元的输出信号，包括非活跃单元
-        """
-        outputs = {}
-        for unit_id, unit in self.units.items():
-            attack_strength = attack_signals.get(unit_id, 0.0)
-            # 所有单元都生成输出，不论是否活跃
-            outputs[unit_id] = unit.generate_output(attack_strength)
-        return outputs
+        # outputs = {}
+        for uid, unit in self.units.items():
+            sig = attack_signals.get(uid, 0.0)
+            self.outputs[uid] = unit.generate_output(sig)  # ! 输出类型是CORRECT_SIGNAL或ERROR_SIGNAL
+        return self.outputs
     
-    def fuse_outputs_with_replacement(self, outputs):
+
+            
+    
+    
+    def output(self):
+        fused_output = self.judge()  # ! 融合裁决
+        self.schedule() # ! 调度
+        self.update_feedback(fused_output)
+        return fused_output
+    
+    def recover(self):
+        self.isScheduled = False
+    
+    def judge(self):  # 融合结果
+        outputs = self.outputs
         vote_counts = defaultdict(int)
+        active_units = [uid for uid, unit in self.units.items() if unit.active]
+        
+        if (len(active_units) < self.min_active_units):
+            logger.warning("[警告] 活跃执行体数量少于最小要求，执行体全量替换")
+            self.isScheduled = True
+            return CORRECT_SIGNAL  # 返回正确信号以避免错误输出
         
         for uid, output in outputs.items():
             unit = self.units.get(uid)
@@ -90,87 +58,51 @@ class vanilleDHR:
         max_vote = max(vote_counts.items(), key=lambda x: x[1])
         # 检查是否有平局的情况
         ties = [vote for vote, count in vote_counts.items() if count == max_vote[1]]
-        
+
         # 如果平局且包含正确信号，则优先返回正确信号
         if len(ties) > 1:
-            self._replace_all_units()  # 替换所有执行体
+            self.isScheduled = True  # 标记替换操作已发生
             return CORRECT_SIGNAL
         else: 
             return max_vote[0]
+
     
-    def get_decision(self, attack_signals):
-        """
-        一步完成输出收集和融合过程
-        
-        Args:
-            attack_signals: 攻击信号字典
-            
-        Returns:
-            融合决策结果和详细统计信息
-        """
-        outputs = self.collect_outputs(attack_signals)
-        decision = self.fuse_outputs_with_replacement(outputs)
-        
-        # 统计输出情况
-        stats = {
-            "total_units": len(self.units),
-            "active_units": sum(1 for u in self.units.values() if u.active),
-            "outputs": outputs,
-            "output_counts": {
-                CORRECT_SIGNAL: sum(1 for o in outputs.values() if o == CORRECT_SIGNAL),
-                ERROR_SIGNAL: sum(1 for o in outputs.values() if o == ERROR_SIGNAL)
-            },
-            "decision": decision
-        }
-        
-        return decision, stats
-         
-    def get_status(self):
-        """
-        获取DHR系统当前状态
-        
-        Returns:
-            系统状态字典
-        """
-        return {
-            "total_units": len(self.units),
-            "active_units": sum(1 for u in self.units.values() if u.active),
-            "units": {uid: {
-                        "active": u.active, 
-                        "attack_threshold": u.attack_threshold,
-                        "weight": u.weight
-                      } for uid, u in self.units.items()}
-        }
-    
-    def update_feedback(self, outputs, fused_output):
-        """
-        简单版反馈更新 - vanilleDHR不更新权重，但会跟踪错误次数
-        
-        Args:
-            outputs: 各执行单元的输出信号字典
-            fused_output: 融合后的输出信号
-        """
-        for unit_id, output in outputs.items():
-            unit = self.units.get(unit_id)
+    def update_feedback(self, fused_output, trust_threshold=0.3):
+        outputs = self.outputs
+        for uid, out in outputs.items():
+            unit = self.units.get(uid)
             if not unit:
                 continue
 
-            is_correct = (output == fused_output)
-            unit.record_result(is_correct)  # 如果输出不一致，记录unit的错误，并将unit.active设为False
+            is_correct = (out == fused_output)
+            if unit.active and not is_correct:
+                unit.active = False
 
-            # 简单记录连续错误次数，不进行软下线操作
-            if is_correct:
-                unit.consecutive_corrects = 0
-            else:
-                unit.consecutive_corrects += 1
+            # unit.record_result(is_correct)
+
+    
+    def schedule(self):
+        if self.isScheduled:
+            self._replace_all_units()
+            self.scheduledNum += 1
+        
 
     def _replace_all_units(self):
         old_ids = list(self.units.keys())
         self.units.clear()
         for oid in old_ids:
-            defense_threshold = random.uniform(0.0, 1.0)  # 随机生成攻击阈值
-            # defense_threshold = 0.5
-            self.add_unit(oid, attack_threshold=defense_threshold)
-        self.checkFlag  = True  # 标记替换操作已发生
-        print("[替换] 所有执行体已替换")
-        
+            self.add_unit(oid)
+        logger.info("[替换] 所有执行体已替换")
+
+    def get_status(self):
+        status = {}
+        for uid, unit in self.units.items():
+            status[uid] = {
+                "weight": round(unit.weight, 3),
+                "active": unit.active,
+                "soft_retired": unit.soft_retired,
+                "recent_correct": sum(unit.recent_results),
+                "total_in_window": len(unit.recent_results),
+                "beta_mean_accuracy": round(unit.beta_accuracy(), 3)
+            }
+        return status

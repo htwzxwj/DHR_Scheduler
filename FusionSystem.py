@@ -2,7 +2,6 @@ from collections import defaultdict, deque
 import math
 from scipy.stats import beta
 from logger_config import default_logger as logger
-import sys
 
 
 # === 全局变量定义 ===
@@ -63,26 +62,61 @@ class ExecutionUnit:
 class FusionSystem:
     def __init__(self, min_active_units=3):
         self.units = {}
-        self.min_active_units = min_active_units
-        self.checkFlag = False
+        self.isScheduled = False  # 是否需要调度
+        self.scheduledNum = 0
+        self.outputs = {}  # 每个执行体的输出，{id，输出}
 
     def add_unit(self, unit_id, **kwargs):
         self.units[unit_id] = ExecutionUnit(unit_id, **kwargs)
 
     def collect_outputs(self, attack_signals):
-        outputs = {}
+        # outputs = {}
         for uid, unit in self.units.items():
             sig = attack_signals.get(uid, 0.0)
-            outputs[uid] = unit.generate_output(sig)
-        return outputs
+            self.outputs[uid] = unit.generate_output(sig)  # ! 输出类型是CORRECT_SIGNAL或ERROR_SIGNAL
+        return self.outputs
+    
 
-    def compute_entropy(self, label_weights):
-        total = sum(label_weights.values())
-        if total == 0:
-            return 1.0
-        return -sum((w / total) * math.log2(w / total) for w in label_weights.values() if w > 0)
+    # def compute_entropy(self, label_weights):
+    #     total = sum(label_weights.values())
+    #     if total == 0:
+    #         return 1.0
+    #     return -sum((w / total) * math.log2(w / total) for w in label_weights.values() if w > 0)
 
-    def fuse_outputs_with_replacement(self, outputs, entropy_threshold=0.9, trust_threshold=0.99):
+    def compute_entropy(self):
+        """
+        直接用所有 unit 的 weight 归一化分布计算信息熵，反映当前所有执行体权重分布的不确定性。
+        """
+        weights = [unit.weight for unit in self.units.values() if unit.active]
+        total = sum(weights)
+        if total == 0 or len(weights) <= 1:
+            return 0.0
+        entropy = -sum((w / total) * math.log2(w / total) for w in weights if w > 0)
+        max_entropy = math.log2(len(weights))
+        return entropy / max_entropy  # 归一化到[0,1]
+    
+
+    def compute_entropy_threshold(self, alpha=0.9):
+        num_units = len([u for u in self.units.values() if u.active])
+        if num_units <= 1:
+            return 999  # 只有一个标签，不存在不确定性
+        max_entropy = math.log2(num_units)
+        return alpha * max_entropy
+
+    
+    def output(self):
+        fused_output = self.judge()  # ! 融合裁决
+        self.schedule() # ! 调度
+        self.update_feedback(self.outputs, fused_output=fused_output)
+        self.update_weights()
+
+        return fused_output
+    
+    def recover(self):
+        self.isScheduled = False
+    
+    def judge(self, trust_threshold=0.3):  # ! 融合裁决
+        outputs = self.outputs
         label_weights = defaultdict(float)
         for uid, lbl in outputs.items():
             unit = self.units.get(uid)
@@ -91,11 +125,10 @@ class FusionSystem:
 
         if not label_weights:
             logger.warning("[警告] 无在线的执行体，执行体全量替换")
-            self.checkFlag = True
-            self._replace_all_units()
+            self.isScheduled = True
             return CORRECT_SIGNAL
 
-        entropy = self.compute_entropy(label_weights)
+        entropy = self.compute_entropy()
 
         labels = set(label_weights.keys())
         majority_label = max(label_weights.items(), key=lambda x: x[1])[0]
@@ -119,36 +152,37 @@ class FusionSystem:
         logger.info(f"[准确率] 主标签 {majority_label} 平均准确率: {majority_acc:.3f}")
         if other_label is not None:
             logger.info(f"[准确率] 另一标签 {other_label} 平均准确率: {other_acc:.3f}")
-
-        # 熵大且主标签准确率低于另一标签，触发替换
-        # if entropy > entropy_threshold and majority_acc < other_acc:
-        #     logger.info("[触发替换] 熵大且主标签准确率低于另一标签，触发执行体替换")
-        #     self.checkFlag = True
-        #     self._replace_all_units()
-        #     return CORRECT_SIGNAL
-
-        if majority_acc < other_acc:
-            logger.info("[触发替换] 熵大且主标签准确率低于另一标签，触发执行体替换")
-            self.checkFlag = True
-            self._replace_all_units()
-            return CORRECT_SIGNAL
-
+        entropy_threshold = self.compute_entropy_threshold()
 
         # 主标签准确率足够高，返回主标签
-        if majority_acc >= trust_threshold:
+        if other_acc >= trust_threshold and majority_acc > other_acc and entropy < entropy_threshold :
             return majority_label
-
-        # 主标签准确率不够高但另一标签达标，返回另一标签
-        if other_acc >= trust_threshold:
+        
+        elif majority_acc > other_acc and majority_acc <= trust_threshold:
+            if entropy >= entropy_threshold:
+                logger.info("[触发替换] 主标签准确率低于阈值且熵大，触发执行体替换")
+                self.isScheduled = True
+                return CORRECT_SIGNAL
+            else:
+                return majority_label
+        elif majority_acc < other_acc and other_acc >= trust_threshold:
             logger.info(f"[返回另一标签] 主标签准确率低，返回另一标签 {other_label}")
             return other_label
+        elif majority_acc < other_acc and other_acc < trust_threshold:
+            if entropy >= entropy_threshold:
+                logger.info("[触发替换] 主标签准确率低且熵大，触发执行体替换")
+                self.isScheduled = True
+                return CORRECT_SIGNAL
+        # else:
+        #     logger.info("无法正确裁决，直接调度")
+        #     self.isScheduled = True
+        #     return CORRECT_SIGNAL
 
-        # 两者准确率都不达标，触发替换
-        logger.info("[软降级] 主标签和另一标签准确率均低，触发执行体替换")
-        self.checkFlag = True
-        self._replace_all_units()
-        return CORRECT_SIGNAL
-
+    def schedule(self):
+        if self.isScheduled:
+            self._replace_all_units()
+            self.scheduledNum += 1
+        
     def update_feedback(self, outputs, fused_output, trust_threshold=0.5):
         for uid, out in outputs.items():
             unit = self.units.get(uid)
@@ -165,7 +199,7 @@ class FusionSystem:
             #     unit.active = False
             #     logger.info(f"[软下线] 执行体 {uid} 的准确率 {acc:.2f} 低于阈值 {trust_threshold} 或输出与融合结果不符")
 
-    def update_weights(self, decay_factor=0.5):
+    def update_weights(self, decay_factor=0.8):
         temp = {}
         for uid, unit in self.units.items():
             if unit.soft_retired:
@@ -176,14 +210,17 @@ class FusionSystem:
             penalty = math.exp(-decay_factor * (1 - beta_mean))  # 越不准惩罚越重
             temp[uid] = beta_mean * penalty
 
-        total = sum(temp.values())
-        if total == 0:
-            avg = 1.0 / len(self.units)
-            for unit in self.units.values():
-                unit.weight = avg
-        else:
-            for uid, score in temp.items():
-                self.units[uid].weight = score / total
+        for uid, score in temp.items():
+                self.units[uid].weight *= score
+        
+        # total = sum(temp.values())
+        # if total == 0:
+        #     avg = 1.0 / len(self.units)
+        #     for unit in self.units.values():
+        #         unit.weight = avg
+        # else:
+        #     for uid, score in temp.items():
+        #         self.units[uid].weight = score / total
 
     def _replace_all_units(self):
         old_ids = list(self.units.keys())
