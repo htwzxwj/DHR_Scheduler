@@ -6,8 +6,17 @@ from logger_config import default_logger as logger
 
 # === 全局变量定义 ===
 CORRECT_SIGNAL = "A"  # 正确信号
-ERROR_SIGNAL = "B"    # 错误信号
+# ERROR_SIGNAL = ["B", "D", "E", "F", "1", "2", "3", "11", "22", "33"]   
+# ERROR_SIGNAL = ["B", "D", "E", "F"]    # 错误信号
+ERROR_SIGNAL = ["B"]    # 错误信号
 SCHEDULED_SIGNAL = "C"  # 调度信号，表示需要替换执行体
+
+def chooseERROR_SIGNAL(attackResult):
+    """随机选择一个错误信号"""
+    n = len(ERROR_SIGNAL)
+    idx = min(int(attackResult * n), n - 1)
+    return ERROR_SIGNAL[idx]
+
 
 class ExecutionUnit:
     def __init__(self, unit_id, weight=1.0, error_threshold=1, recovery_threshold=1,
@@ -19,7 +28,7 @@ class ExecutionUnit:
         self.attack_threshold = attack_threshold
         self.active = True
         self.soft_retired = False
-
+        # self.unit_output = CORRECT_SIGNAL  # ! 执行体输出，默认为正确信号
         self.recent_results = deque(maxlen=bayes_window)  # 窗口缓存正确/错误
         self.consecutive_corrects = 0
 
@@ -28,7 +37,9 @@ class ExecutionUnit:
 
 
     def generate_output(self, attack_signal):
-        return ERROR_SIGNAL if attack_signal > self.attack_threshold else CORRECT_SIGNAL
+        attackResult = attack_signal - self.attack_threshold
+        self.result = chooseERROR_SIGNAL(attackResult) if attackResult >= 0 else CORRECT_SIGNAL
+        return self.result
 
     def record_result(self, is_correct, fused_output, trust_threshold=0.5):
         self.recent_results.append(is_correct)
@@ -61,10 +72,9 @@ class ExecutionUnit:
 
 
 class FusionSystem:
-    def __init__(self, min_active_units=3):
+    def __init__(self):
         self.units = {}
         self.isScheduled = False  # 是否需要调度
-        self.min_active_units = min_active_units
         self.scheduledNum = 0
         self.outputs = {}  # 每个执行体的输出，{id，输出}
 
@@ -86,19 +96,20 @@ class FusionSystem:
     #     return -sum((w / total) * math.log2(w / total) for w in label_weights.values() if w > 0)
 
     def compute_entropy(self):
-
-        weights = [unit.weight for unit in self.units.values() if unit.active]
-        n = len(weights)
+        # 统计每个输出标签的总权重
+        label_weight = {}
+        for unit in self.units.values():
+            if unit.active:
+                label = unit.result
+                label_weight[label] = label_weight.get(label, 0.0) + unit.weight
+        n = len(label_weight)
         if n <= 1:
             return 0.0
-
-        mean = sum(weights) / n
-        variance = sum((w - mean) ** 2 for w in weights) / n
-        std_dev = math.sqrt(variance)
-
-        # 可归一化：最大值假设其中一个为1其余为0，即最大偏差 = mean
-        max_std_dev = math.sqrt((n - 1) * (mean ** 2) / n)
-        return std_dev / max_std_dev if max_std_dev > 0 else 0.0
+        mean = [w for w in label_weight.values() if w > 0]
+        mean = sum(mean) / n
+        variance = sum((w - mean) ** 2 for w in label_weight.values()) / n
+        max_var = mean ** 2 * (n - 1)
+        return variance / max_var if max_var > 0 else 0.0
     
 
     def compute_entropy_threshold(self, alpha=0.9):
@@ -116,13 +127,12 @@ class FusionSystem:
         self.schedule() # ! 调度
         self.update_feedback(self.outputs, fused_output=fused_output)
         
-
         return fused_output
     
     def recover(self):
         self.isScheduled = False
     
-    def judge(self, trust_threshold=0.6):  # ! 融合裁决
+    def judge(self, trust_threshold=0.5):  # ! 融合裁决
         outputs = self.outputs
         label_weights = defaultdict(float)
         weightSum = 0.0
@@ -132,32 +142,8 @@ class FusionSystem:
                 label_weights[lbl] += unit.weight
                 weightSum += unit.weight
 
-        # if weightSum < 3.5:
-        #     logger.warning("[警告] 权重和少于最小要求，执行体全量替换")
-        #     self.isScheduled = True
-        #     return CORRECT_SIGNAL
-        
-
-        # if not label_weights:
-        #     logger.warning("[警告] 无在线的执行体，执行体全量替换")
-        #     self.isScheduled = True
-        #     return SCHEDULED_SIGNAL
-
-        
         entropy = self.compute_entropy()
-
         labels = set(label_weights.keys())
-        majority_label = max(label_weights.items(), key=lambda x: x[1])[0]
-        other_labels = labels - {majority_label}
-        other_label = other_labels.pop() if other_labels else None
-
-        # if label_weights[majority_label] < 1.5:
-        #     logger.warning("[警告] 权重和少于最小要求，执行体全量替换")
-        #     self.isScheduled = True
-        #     return SCHEDULED_SIGNAL
-
-        logger.warning(f"[熵信息] 熵值: {entropy:.4f}, 主标签: {majority_label}")
-
         def avg_accuracy(label):
             if label is None:
                 return 0.0
@@ -166,26 +152,37 @@ class FusionSystem:
             if not units:
                 return 0.0
             return sum(u.beta_accuracy() for u in units) / len(units)
+        output_dict = {}
+        for lbl in labels:
+            acc = avg_accuracy(lbl)
+            output_dict[lbl] = acc
 
-        majority_acc = avg_accuracy(majority_label)
-        other_acc = avg_accuracy(other_label)
-
-        logger.info(f"[准确率] 主标签 {majority_label} 平均准确率: {majority_acc:.3f}")
-        if other_label is not None:
-            logger.info(f"[准确率] 另一标签 {other_label} 平均准确率: {other_acc:.3f}")
         entropy_threshold = self.compute_entropy_threshold()
 
-        if majority_acc < trust_threshold and other_acc < trust_threshold:
-            logger.info(f"[触发替换] 主标签或另一标签准确率低于阈值 {trust_threshold:.2f}，触发执行体替换")
+        if all(acc < trust_threshold for acc in output_dict.values()):
+            logger.info(f"[触发替换] 主标签和所有其他标签准确率均低于阈值 {trust_threshold:.2f}，触发执行体替换")
             self.isScheduled = True
             return SCHEDULED_SIGNAL
         if entropy >= entropy_threshold:
             logger.info(f"[高熵条件] 熵值 {entropy:.4f} 超过阈值 {entropy_threshold:.4f}，触发执行体替换")
             self.isScheduled = True
             return SCHEDULED_SIGNAL
+        sorted_labels = sorted(label_weights.items(), key=lambda x: x[1], reverse=True)
+        for lbl, _ in sorted_labels:
+            if output_dict[lbl] >= trust_threshold:
+                return lbl
+        return sorted_labels[0][0] if sorted_labels else None
 
-
-        return majority_label if majority_acc >= other_acc else other_label  # ! 选择置信度大的
+        
+        # # 选择置信度（准确率）最大的标签，如果有多个，选择权重最大的标签
+        # max_acc = max(output_dict.values())
+        # max_acc_labels = [lbl for lbl, acc in output_dict.items() if acc == max_acc]
+        # if len(max_acc_labels) == 1:
+        #     return max_acc_labels[0]
+        # else:
+        #     # 多个标签置信度最大，选择权重最大的
+        #     label_weights = {lbl: label_weights[lbl] for lbl in max_acc_labels}
+        #     return max(label_weights.items(), key=lambda x: x[1])[0]
 
 
 
@@ -241,9 +238,7 @@ class FusionSystem:
             unit = self.units.get(uid)
             if not unit:
                 continue
-
             is_correct = (out == fused_output) if fused_output != SCHEDULED_SIGNAL else False
-            logger.info(f"[反馈] 执行体 {uid} 输出: {out}, 融合结果: {fused_output}, 正确: {is_correct}")
             unit.record_result(is_correct, fused_output)
             if is_correct:
                 self.units[uid].weight *= 1 + decay_factor  # ! 正确输出，权重衰减

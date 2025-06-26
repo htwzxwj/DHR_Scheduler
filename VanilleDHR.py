@@ -1,7 +1,7 @@
 from collections import defaultdict
 import random
 from logger_config import default_logger as logger
-from FusionSystem import ExecutionUnit, CORRECT_SIGNAL, ERROR_SIGNAL, SCHEDULED_SIGNAL
+from FusionSystem import ExecutionUnit, CORRECT_SIGNAL, ERROR_SIGNAL, SCHEDULED_SIGNAL, chooseERROR_SIGNAL
 
 # random.seed(42)  # 固定随机种子以确保可重复性
 
