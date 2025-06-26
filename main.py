@@ -4,10 +4,9 @@ import random
 random.seed(42)
 from logger_config import default_logger as logger
 
-NUM_UNITS = 5
-NUM_ROUNDS = 3000
-ATTACK_PROB = 1.0  # * 攻击概率
-
+NUM_UNITS = 7
+NUM_ROUNDS = 5000
+ATTACK_PROB = 1  # * 攻击概率
 
 fusion_A_count = 0
 fusion_B_count = 0
@@ -75,8 +74,8 @@ for i in range(NUM_ROUNDS):
             dhr_B_count += 1
 
 
-logger.info(f"FusionSystem输出A次数: {fusion_A_count}, 输出错误次数: {fusion_B_count}，准确率: {fusion_A_count / (fusion_A_count + fusion_B_count):.2f}")
-logger.info(f"vanilleDHR输出A次数: {dhr_A_count}, 输出错误次数: {dhr_B_count}，准确率: {dhr_A_count / (dhr_A_count + dhr_B_count):.2f}")
+logger.info(f"FusionSystem输出A次数: {fusion_A_count}, 输出错误次数: {fusion_B_count}，准确率: {fusion_A_count / (fusion_A_count + fusion_B_count):.4f}")
+logger.info(f"vanilleDHR输出A次数: {dhr_A_count}, 输出错误次数: {dhr_B_count}，准确率: {dhr_A_count / (dhr_A_count + dhr_B_count):.4f}")
 
 logger.info(f"融合系统调度次数: {fusion_system.scheduledNum}")
 logger.info(f"DHR系统调度次数: {dhr.scheduledNum}")

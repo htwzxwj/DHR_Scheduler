@@ -112,7 +112,7 @@ class FusionSystem:
         return variance / max_var if max_var > 0 else 0.0
     
 
-    def compute_entropy_threshold(self, alpha=0.9):
+    def compute_entropy_threshold(self, alpha=0.7):
         # num_units = len([u for u in self.units.values() if u.active])
         # if num_units <= 1:
         #     return 999  # 只有一个标签，不存在不确定性
@@ -132,7 +132,7 @@ class FusionSystem:
     def recover(self):
         self.isScheduled = False
     
-    def judge(self, trust_threshold=0.5):  # ! 融合裁决
+    def judge(self, trust_threshold=0.4):  # ! 融合裁决
         outputs = self.outputs
         label_weights = defaultdict(float)
         weightSum = 0.0
