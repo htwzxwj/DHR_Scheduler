@@ -1,5 +1,9 @@
 # DHR_Scheduler 仿真平台
 
+<p align="center">
+   <img src="assets/logo.png" alt="DHR_Scheduler Logo" width="500"/>
+</p>
+
 ## 项目简介
 本项目用于仿真和对比分布式冗余容错系统（DHR, Distributed Heterogeneous Redundancy）在面对攻击时的鲁棒性表现。支持自适应融合系统（FusionSystem）与静态冗余系统（vanilleDHR）两种典型架构。
 

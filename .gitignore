@@ -21,7 +21,6 @@ build/
 *.tgz
 *.tar
 *.zip
-*.png
 *.pdf
 
 # Log files
