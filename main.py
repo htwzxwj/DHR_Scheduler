@@ -4,9 +4,9 @@ import random
 random.seed(42)
 from logger_config import default_logger as logger
 
-NUM_UNITS = 7
-NUM_ROUNDS = 5000
-ATTACK_PROB = 1  # * 攻击概率
+NUM_UNITS = 3
+NUM_ROUNDS = 1000
+ATTACK_PROB = 0.4  # * 攻击概率
 
 fusion_A_count = 0
 fusion_B_count = 0

@@ -6,9 +6,9 @@ from logger_config import default_logger as logger
 
 # === 全局变量定义 ===
 CORRECT_SIGNAL = "A"  # 正确信号
-# ERROR_SIGNAL = ["B", "D", "E", "F", "1", "2", "3", "11", "22", "33"]   
+ERROR_SIGNAL = ["B", "D", "E", "F", "1", "2", "3", "11", "22", "33"] 
 # ERROR_SIGNAL = ["B", "D", "E", "F"]    # 错误信号
-ERROR_SIGNAL = ["B"]    # 错误信号
+# ERROR_SIGNAL = ["B"]    # 错误信号
 SCHEDULED_SIGNAL = "C"  # 调度信号，表示需要替换执行体
 
 def chooseERROR_SIGNAL(attackResult):
@@ -34,7 +34,6 @@ class ExecutionUnit:
 
         for i in range(bayes_window):
             self.recent_results.append((True))
-
 
     def generate_output(self, attack_signal):
         attackResult = attack_signal - self.attack_threshold
