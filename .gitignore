@@ -10,6 +10,8 @@ ENV/
 .conda/
 __pycache__/
 .pytest_cache/
+.typ
+
 
 # Distribution / packaging
 dist/

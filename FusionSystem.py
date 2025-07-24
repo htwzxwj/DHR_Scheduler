@@ -75,19 +75,21 @@ class FusionSystem:
         self.units = {}
         self.isScheduled = False  # 是否需要调度
         self.scheduledNum = 0
-        self.outputs = {}  # 每个执行体的输出，{id，输出}
+        self.outputs = {}  # 每个执行体的输出，{id，输出}，其中如果是正确的就是‘A’如果是错误的就是‘B’等其他错误信号
 
     def add_unit(self, unit_id, **kwargs):
         self.units[unit_id] = ExecutionUnit(unit_id, **kwargs)
 
     def collect_outputs(self, attack_signals):
+        '''
+        attack_signals: dict, {unit_id: attack_signal}
+        '''
         # outputs = {}
         for uid, unit in self.units.items():
             sig = attack_signals.get(uid, 0.0)
             self.outputs[uid] = unit.generate_output(sig)  # ! 输出类型是CORRECT_SIGNAL或ERROR_SIGNAL
         return self.outputs
     
-
     # def compute_entropy(self, label_weights):
     #     total = sum(label_weights.values())
     #     if total == 0:
@@ -95,20 +97,36 @@ class FusionSystem:
     #     return -sum((w / total) * math.log2(w / total) for w in label_weights.values() if w > 0)
 
     def compute_entropy(self):
-        # 统计每个输出标签的总权重
-        label_weight = {}
+        """
+        计算每个输出类别的权重方差，并将其存储在一个字典中，格式为 {label: normalized_variance}
+        """
+        # 统计每个标签对应的执行体权重列表
+        label_weights = defaultdict(list)
         for unit in self.units.values():
             if unit.active:
                 label = unit.result
-                label_weight[label] = label_weight.get(label, 0.0) + unit.weight
-        n = len(label_weight)
-        if n <= 1:
-            return 0.0
-        mean = [w for w in label_weight.values() if w > 0]
-        mean = sum(mean) / n
-        variance = sum((w - mean) ** 2 for w in label_weight.values()) / n
-        max_var = mean ** 2 * (n - 1)
-        return variance / max_var if max_var > 0 else 0.0
+                label_weights[label].append(unit.weight)
+        
+        # 计算每个标签的方差
+        variance_dict = {}
+        for label, weights in label_weights.items():
+            if len(weights) <= 1:
+                variance_dict[label] = 0.0
+                continue
+            
+            # 计算方差: Var(X) = E[(X - E[X])²]
+            mean = sum(weights) / len(weights)
+            variance = sum((w - mean) ** 2 for w in weights) / len(weights)
+            variance_dict[label] = variance
+        
+        # 归一化处理
+        max_variance = max(variance_dict.values()) if variance_dict else 1.0
+        normalized_dict = {}
+        for label, variance in variance_dict.items():
+            normalized = variance / max_variance if max_variance > 0 else 0.0
+            normalized_dict[label] = normalized
+            
+        return normalized_dict
     
 
     def compute_entropy_threshold(self, alpha=0.7):
@@ -135,14 +153,17 @@ class FusionSystem:
         outputs = self.outputs
         label_weights = defaultdict(float)
         weightSum = 0.0
+        # * 得到各标签的权值
         for uid, lbl in outputs.items():
             unit = self.units.get(uid)
             if unit and unit.active:
                 label_weights[lbl] += unit.weight
                 weightSum += unit.weight
+        # * 计算不确定性--熵
+        entropyDict = self.compute_entropy()  
 
-        entropy = self.compute_entropy()
         labels = set(label_weights.keys())
+
         def avg_accuracy(label):
             if label is None:
                 return 0.0
@@ -151,19 +172,23 @@ class FusionSystem:
             if not units:
                 return 0.0
             return sum(u.beta_accuracy() for u in units) / len(units)
+        
+        # * 计算每个标签的平均准确率
         output_dict = {}
         for lbl in labels:
             acc = avg_accuracy(lbl)
             output_dict[lbl] = acc
 
+        # * 计算阈值
         entropy_threshold = self.compute_entropy_threshold()
 
+        # * 结果统计
         if all(acc < trust_threshold for acc in output_dict.values()):
             logger.info(f"[触发替换] 主标签和所有其他标签准确率均低于阈值 {trust_threshold:.2f}，触发执行体替换")
             self.isScheduled = True
             return SCHEDULED_SIGNAL
-        if entropy >= entropy_threshold:
-            logger.info(f"[高熵条件] 熵值 {entropy:.4f} 超过阈值 {entropy_threshold:.4f}，触发执行体替换")
+        if all(val >= entropy_threshold for val in entropyDict.values()):
+            logger.info(f"[高熵条件] 熵方差 {entropyDict} 超过阈值 {entropy_threshold}，触发执行体替换")
             self.isScheduled = True
             return SCHEDULED_SIGNAL
         sorted_labels = sorted(label_weights.items(), key=lambda x: x[1], reverse=True)

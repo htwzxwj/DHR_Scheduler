@@ -1,59 +1,199 @@
-\documentclass{standalone}
-\usepackage{tikz}
-\usetikzlibrary{positioning,arrows.meta,shapes,decorations.pathreplacing}
-\usepackage{amssymb}
+\documentclass{article}
+\usepackage{amsmath, amssymb}
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\setCJKmainfont{SimSun} % or another installed Chinese font
 
 \begin{document}
-\begin{tikzpicture}[
-        node/.style={circle, draw, thick, minimum size=7mm},
-        dashedline/.style={->, thick, dashed},
-        solidline/.style={->, thick},
-        attack/.style={thick, red},
-        font=\sffamily
-    ]
 
-    % FusionSystem (left)
-    \node[node, fill=blue!10] (a1) at (-4,2) {};
-    \node[node, fill=blue!10] (a2) at (-3,3.2) {};
-    \node[node, fill=blue!10] (a3) at (-2,2.4) {};
-    \node[node, fill=blue!10] (a4) at (-1.8,1.1) {};
-    \node[node, fill=blue!10] (a5) at (-2.7,0) {};
-    \node[node, fill=blue!10] (a6) at (-4.2,0.4) {};
+设有 $n$ 个不同的标签 $y_1, y_2, \dots, y_n$，每个标签对应的权重和为 $w_i > 0$。
 
-    % FusionSystem connections
-    \foreach \i/\j in {a1/a2,a1/a3,a2/a3,a2/a4,a3/a4,a3/a5,a4/a5,a5/a6,a6/a1,a4/a6} {
-            \draw[dashedline, blue!60] (\i) -- (\j);
-        }
+定义平均权重：
+\[
+\bar{w} = \frac{1}{n} \sum_{i=1}^{n} w_i
+\]
 
-    % Attack symbol
-    \draw[attack] (-4.2,2.2) -- (-4.0,2.6) -- (-4.3,2.6) -- (-4.1,3.0);
+定义方差：
+\[
+\mathrm{Var}(w) =
+\frac{1}{n} \sum_{i=1}^{n} \bigl(w_i - \bar{w}\bigr)^2
+\]
 
-    % FusionSystem label
-    \node[below=0.4cm of a5] (fslabel) {\textbf{FusionSystem}\\\small adaptive};
+定义最大可能方差：
+\[
+\mathrm{MaxVar} =
+\bar{w}^2 (n-1)
+\]
 
-    % VanilleDHR (right)
-    \node[node, fill=gray!10] (b1) at (2,2) {};
-    \node[node, fill=gray!10] (b2) at (3,3) {};
-    \node[node, fill=gray!10] (b3) at (4,2.5) {};
-    \node[node, fill=gray!10] (b4) at (4.2,1) {};
-    \node[node, fill=gray!10] (b5) at (3,0) {};
-    \node[node, fill=gray!10] (b6) at (1.8,0.8) {};
+则返回的归一化方差 $H$ 定义为：
+\[
+H =
+\begin{cases}
+0, & n \leq 1 \\[10pt]
+\displaystyle
+\frac{\mathrm{Var}(w)}{\mathrm{MaxVar}}, & n > 1 \text{ 且 } \mathrm{MaxVar} > 0 \\[10pt]
+0, & \mathrm{MaxVar} = 0
+\end{cases}
+\]
 
-    % VanilleDHR connections
-    \foreach \i/\j in {b1/b2,b2/b3,b3/b4,b4/b5,b5/b6,b6/b1,b2/b5,b3/b6} {
-            \draw[solidline, gray] (\i) -- (\j);
-        }
+即：
+\[
+H =
+\begin{cases}
+0, & n \leq 1 \\[10pt]
+\displaystyle
+\frac{
+\frac{1}{n} \sum_{i=1}^{n} (w_i - \bar{w})^2
+}{
+\bar{w}^2 (n-1)
+}, & n > 1 \text{ 且 } \bar{w}^2 (n-1) > 0 \\[10pt]
+0, & \text{否则}
+\end{cases}
+\]
 
-    % VanilleDHR label
-    \node[below=0.4cm of b5] (vhlabel) {\textbf{VanilleDHR}\\\small static};
+\section*{Beta Accuracy 计算流程}
 
-    % Global title
-    \node[font=\bfseries, yshift=1.5cm] at (0,4) {DHR\_Scheduler};
+我们希望估计一个执行单元输出正确的概率 \( p \)，给定最近 \( N \) 次输出的观测结果。
 
-    % Bottom labels
-    \node at (-4,-1.5) {SIMULATION};
-    \node at (0,-1.5) {ROBUSTNESS};
-    \node at (4,-1.5) {LOGGING};
+\subsection*{输入}
 
-\end{tikzpicture}
+观测序列：
+\[
+X = (x_1, x_2, \dots, x_N), \quad x_i \in \{0,1\}
+\]
+
+其中：
+\[
+x_i =
+\begin{cases} 
+1, & \text{第 \(i\) 次输出正确} \\[6pt]
+0, & \text{第 \(i\) 次输出错误}
+\end{cases}
+\]
+
+正确次数：
+\[
+c = \sum_{i=1}^{N} x_i
+\]
+
+错误次数：
+\[
+N-c
+\]
+
+\subsection*{先验假设}
+
+假设 \( p \) 的先验分布为均匀分布：
+\[
+p \sim \text{Beta}(1,1)
+\]
+
+表示对 \( p \) 没有先验偏好。
+
+\subsection*{后验更新}
+
+根据 Beta-Bernoulli 共轭性，经过 \( c \) 次正确和 \( N-c \) 次错误后，\( p \) 的后验分布为：
+\[
+p \mid X \sim \text{Beta}(a,b)
+\]
+
+其中：
+\[
+a = c+1, \quad b = (N-c)+1
+\]
+
+\subsection*{点估计}
+
+取 Beta 后验分布的均值作为 \( p \) 的估计值：
+\[
+\hat{p}_{\text{beta}} =
+\mathbb{E}[p \mid X] =
+\frac{a}{a+b} =
+\frac{c+1}{N+2}
+\]
+
+\subsection*{流程总结}
+
+\begin{enumerate}
+    \item 统计最近窗口 \( N \) 次观测中的正确次数：
+    \[
+    c = \sum_{i=1}^{N} x_i
+    \]
+    \item 计算 Beta 分布的参数：
+    \[
+    a = c+1, \quad b = N-c+1
+    \]
+    \item 计算 Beta 分布的均值：
+    \[
+    \hat{p}_{\text{beta}} =
+    \frac{a}{a+b} =
+    \frac{c+1}{N+2}
+    \]
+\end{enumerate}
+
+\section*{执行体权重动态更新机制}
+
+设执行体集合为 \( U = \{ u_1, u_2, \dots, u_M \} \)，每个执行体 \( u_i \) 具有以下状态变量：
+\begin{itemize}
+  \item 当前权重 \( w_i \in [0,1] \)，反映其在融合决策中的可信度；
+  \item 当前输出标签 \( r_i \)；
+  \item 当前活跃状态由指示函数 \(\delta_i \in \{0,1\}\) 表示。
+\end{itemize}
+
+设当前系统融合输出为 \( r^* \)，且设定一个固定的权重调整系数 \( \lambda \in (0,1) \) （称为衰减/增强因子）。
+
+\subsection*{正确性判定}
+
+定义执行体 \( u_i \) 在当前时刻输出的正确性指标：
+\[
+\mathrm{correct}_i =
+\begin{cases}
+1, & \text{若 } r_i = r^* \text{ 且 } r^* \neq \texttt{SCHEDULED\_SIGNAL} \\[8pt]
+0, & \text{否则}
+\end{cases}
+\]
+
+其中 \texttt{SCHEDULED\_SIGNAL} 是特殊的调度指令标签，不作为标准的正确输出。
+
+\subsection*{权重更新规则}
+
+执行体的权重更新满足如下规则：
+\[
+w_i^{(t+1)} =
+\begin{cases}
+\min\bigl(1, \ w_i^{(t)} \cdot (1+\lambda) \bigr), & \text{若 } \mathrm{correct}_i = 1 \\[10pt]
+\max\bigl(0, \ w_i^{(t)} \cdot (1-\lambda) \bigr), & \text{若 } \mathrm{correct}_i = 0
+\end{cases}
+\]
+
+即，当执行体输出正确时，其权重按比例增加，并且不超过上界 1；当输出错误时，其权重按比例衰减，并且不低于下界 0。
+
+\subsection*{合并形式}
+
+上述更新规则可合并写为：
+\[
+w_i^{(t+1)} =
+\mathrm{Proj}_{[0,1]} \Bigl( \, w_i^{(t)} \cdot \bigl( 1 + \lambda \cdot (2\, \mathrm{correct}_i -1) \bigr) \, \Bigr)
+\]
+
+其中投影算子 \(\mathrm{Proj}_{[0,1]}(x)\) 定义为：
+\[
+\mathrm{Proj}_{[0,1]}(x) =
+\min\bigl(1, \max(0, x) \bigr)
+\]
+
+用于保证更新后的权重始终处于闭区间 \([0,1]\) 之内。
+
+\subsection*{机制说明}
+
+该更新机制通过指数形式的递增/递减，动态调整执行体的权重：
+\begin{itemize}
+  \item 当输出正确时，权重增强，反映其贡献的可靠性；
+  \item 当输出错误时，权重衰减，降低其对决策的影响；
+  \item 权重始终保持在区间 \([0,1]\) 内，便于解释与比较。
+\end{itemize}
+
+该机制兼顾了短期表现的敏感性和长期稳定性，有助于在系统中动态筛选高可信的执行体参与融合。
+
+
 \end{document}

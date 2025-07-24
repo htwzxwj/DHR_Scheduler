@@ -5,7 +5,7 @@ random.seed(42)
 from logger_config import default_logger as logger
 
 NUM_UNITS = 3
-NUM_ROUNDS = 1000
+NUM_ROUNDS = 10000
 ATTACK_PROB = 0.4  # * 攻击概率
 
 fusion_A_count = 0
@@ -36,10 +36,8 @@ dhrTempRecoverTime = 0
 for i in range(NUM_ROUNDS):
     attack_signals = {f"unit_{i}": random.uniform(0.0, 1.0) for i in range(NUM_UNITS)}  # ! 随机生成的攻击信号
 
-   
     if random.random() > ATTACK_PROB:
         attack_signals = {f"unit_{i}": 0 for i in range(NUM_UNITS)}
-
 
     # * 此处是fusion_system的攻击模拟
     if fusion_system.isScheduled and tempRecoverTime < recoverTime:
