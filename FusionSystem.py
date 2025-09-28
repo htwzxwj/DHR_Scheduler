@@ -48,7 +48,7 @@ class ExecutionUnit:
                 if self.consecutive_corrects >= self.recovery_threshold:
                     self.soft_retired = False
                     self.active = True
-                    logger.warning(f"[恢复] 执行体 {self.unit_id} 连续正确 {self.recovery_threshold} 次，已恢复上线")
+                    logger.warning(f"[FusionSystem-恢复] 执行体 {self.unit_id} 连续正确 {self.recovery_threshold} 次，已恢复上线")
             else:
                 self.consecutive_corrects = 0
         else:
@@ -60,7 +60,7 @@ class ExecutionUnit:
                 # logger.warning(f"[软下线] 执行体 {self.unit_id} 输出与融合结果不一致，疑似被攻击")
 
                 # 软下线条件：准确率低于阈值 或 本轮输出与融合结果不一致
-                logger.info(f"[软下线] 执行体 {self.unit_id} 的准确率 {acc:.2f} 低于阈值 {trust_threshold} 或输出与融合结果不符:{is_correct}，融合结果: {fused_output}")
+                logger.info(f"[FusionSystem-软下线] 执行体 {self.unit_id} 的准确率 {acc:.2f} 低于阈值 {trust_threshold} 或输出与融合结果不符:{is_correct}，融合结果: {fused_output}")
 
     def beta_accuracy(self):
         correct = sum(self.recent_results)
@@ -184,11 +184,11 @@ class FusionSystem:
 
         # * 结果统计
         if all(acc < trust_threshold for acc in output_dict.values()):
-            logger.info(f"[触发替换] 主标签和所有其他标签准确率均低于阈值 {trust_threshold:.2f}，触发执行体替换")
+            logger.info(f"[FusionSystem-触发替换] 主标签和所有其他标签准确率均低于阈值 {trust_threshold:.2f}，触发执行体替换")
             self.isScheduled = True
             return SCHEDULED_SIGNAL
         if all(val >= entropy_threshold for val in entropyDict.values()):
-            logger.info(f"[高熵条件] 熵方差 {entropyDict} 超过阈值 {entropy_threshold}，触发执行体替换")
+            logger.info(f"[FusionSystem-高熵条件] 熵方差 {entropyDict} 超过阈值 {entropy_threshold}，触发执行体替换")
             self.isScheduled = True
             return SCHEDULED_SIGNAL
         sorted_labels = sorted(label_weights.items(), key=lambda x: x[1], reverse=True)
@@ -296,7 +296,7 @@ class FusionSystem:
         self.units.clear()
         for oid in old_ids:
             self.add_unit(oid)
-        logger.info("[替换] 所有执行体已替换")
+        logger.info("[FusionSystem-替换] 所有执行体已替换")
 
     def get_status(self):
         status = {}
