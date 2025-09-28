@@ -5,6 +5,34 @@ from FusionSystem import ExecutionUnit, CORRECT_SIGNAL, ERROR_SIGNAL, SCHEDULED_
 
 # random.seed(42)  # 固定随机种子以确保可重复性
 
+class ExecutionUnit_DHR(ExecutionUnit):
+    def record_result(self, is_correct, fused_output, trust_threshold=0.5):
+        self.recent_results.append(is_correct)
+        if self.soft_retired:
+            if is_correct:
+                self.consecutive_corrects += 1
+                if self.consecutive_corrects >= self.recovery_threshold:
+                    self.soft_retired = False
+                    self.active = True
+                    logger.warning(f"[VanilleDHR-恢复] 执行体 {self.unit_id} 连续正确 {self.recovery_threshold} 次，已恢复上线")
+            else:
+                self.consecutive_corrects = 0
+        else:
+            acc = self.beta_accuracy()
+            # Ensure acc is a scalar float for comparison
+            if isinstance(acc, tuple):
+                acc_val = acc[0]
+            elif hasattr(acc, 'item'):
+                acc_val = acc.item()
+            else:
+                acc_val = acc
+            if (not is_correct or acc_val < trust_threshold) and fused_output != SCHEDULED_SIGNAL:
+                self.soft_retired = True
+                self.active = False
+                self.consecutive_corrects = 0
+                logger.info(f"[VanilleDHR-软下线] 执行体 {self.unit_id} 的准确率 {acc_val:.2f} 低于阈值 {trust_threshold} 或输出与融合结果不符:{is_correct}，融合结果: {fused_output}")
+
+
 
 class vanilleDHR:
     def __init__(self, min_active_units=2):
@@ -25,8 +53,6 @@ class vanilleDHR:
         return self.outputs
     
 
-            
-    
     
     def output(self):
         fused_output = self.judge()  # ! 融合裁决
@@ -103,22 +129,3 @@ class vanilleDHR:
         return status
 
 
-class ExecutionUnit_DHR(ExecutionUnit):
-    def record_result(self, is_correct, fused_output, trust_threshold=0.5):
-        self.recent_results.append(is_correct)
-        if self.soft_retired:
-            if is_correct:
-                self.consecutive_corrects += 1
-                if self.consecutive_corrects >= self.recovery_threshold:
-                    self.soft_retired = False
-                    self.active = True
-                    logger.warning(f"[VanilleDHR-恢复] 执行体 {self.unit_id} 连续正确 {self.recovery_threshold} 次，已恢复上线")
-            else:
-                self.consecutive_corrects = 0
-        else:
-            acc = self.beta_accuracy()
-            if (not is_correct or acc < trust_threshold) and fused_output != SCHEDULED_SIGNAL: # type: ignore
-                self.soft_retired = True
-                self.active = False
-                self.consecutive_corrects = 0
-                logger.info(f"[VanilleDHR-软下线] 执行体 {self.unit_id} 的准确率 {acc:.2f} 低于阈值 {trust_threshold} 或输出与融合结果不符:{is_correct}，融合结果: {fused_output}")
